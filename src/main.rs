@@ -7,7 +7,7 @@ use std::{
     process::Command,
 };
 
-use termion::{event::Key, input::TermRead, raw::IntoRawMode};
+use termion::{event::Key, input::TermRead, raw::IntoRawMode, raw::RawTerminal};
 
 fn print_prompt() -> () {
     let path: PathBuf =
@@ -22,7 +22,7 @@ fn print_prompt() -> () {
 
 fn read_line(config: &mut Config) -> (String, Vec<usize>) {
     let mut input: String = String::new();
-    let mut stdout = io::stdout()
+    let mut stdout: RawTerminal<io::Stdout> = io::stdout()
         .into_raw_mode()
         .expect("[SHELL ERROR] Couldn't set raw mode");
     let mut substitutions_index = Vec::new();
@@ -32,10 +32,13 @@ fn read_line(config: &mut Config) -> (String, Vec<usize>) {
             Key::Char('\n') => break,
 
             Key::Backspace => {
-                input.pop();
-                write!(stdout, "\x1B[D \x1B[D").expect("[SHELL ERROR] Coudln't write to stdout");
-                stdout.flush().expect("[SHELL ERROR] Couldn't flush stdout");
-                config.history_position = 0;
+                if !input.is_empty() {
+                    input.pop();
+                    write!(stdout, "\x1B[D \x1B[D")
+                        .expect("[SHELL ERROR] Coudln't write to stdout");
+                    stdout.flush().expect("[SHELL ERROR] Couldn't flush stdout");
+                    config.history_position = 0;
+                }
             }
 
             Key::Char(character) => {
@@ -78,7 +81,9 @@ fn read_line(config: &mut Config) -> (String, Vec<usize>) {
             _ => {}
         }
     }
-    write!(stdout, "\n").expect("[SHELL ERROR] Couldn't write to stdout");
+    write!(stdout, "\r\n").expect("[SHELL ERROR] Couldn't write to stdout");
+
+    stdout.flush().expect("[SHELL ERROR] Couldn't flush stdout");
 
     return (format!("{}\n", input.trim()), substitutions_index);
 }
@@ -281,8 +286,6 @@ fn main() {
                 continue;
             }
         };
-
-        println!("{}", line);
 
         let tokens: Vec<&str> = parse_line(&line);
         execute(&tokens, &config.builtins);
