@@ -100,4 +100,96 @@
 100
 101
 102
-103
+103export
+export
+export tobia=chloe
+export tobia=chloe
+export test=tobia
+clear
+test
+test
+abc
+$test
+test
+ls
+cd $test
+cd $HOME
+line cd $HOME nigger
+ls $HOME nigger
+exit
+cd $HOME nigger
+exit
+cd $HOME
+exit
+cd $HOME
+cd $HOME nigger
+
+cd $HOME
+echo "test"
+cd $HOME
+cd $HOME
+exit
+cd $HOME
+cd $HOME
+exit
+cd $HOME
+exit
+cd $HOME nigger
+exit
+cd $HOME
+exit
+cd $HOME test
+exit
+cd $HOME test
+exit
+cd $HOME nigger
+exit
+exit
+cd $HOME nigger
+exit
+cd $HOME test
+exit
+cd $HOME test
+exit
+cd $HOME test
+exit
+cd $HOME test
+exit
+cd $HOME test
+exit
+cd $HOME test
+cd $HOME
+cd $HOME $test
+cd $HOME
+cd $HOME
+cd $HOME $test
+export test=tobia
+export tobia=chloe
+echo $tobia
+echo $tobia test
+echo $tobia $home test
+echo $tobia $HOME test
+export test=YEAMYBOY
+echo $tobia $HOME $test idk
+echo $test
+echo $tobia
+echo $tobia
+export tobia=chloe
+echo $tobia
+echo $HOME
+export test=EYA
+echo $test
+export test=tasd
+echo $test
+unset test
+expor test=DSADASSKJ
+export test=DSAJKDAJSKDJASK
+echo $test
+export tobia=chloe
+echo $chloe
+echo $tobia
+unset test
+unset test
+unset test
+export test=wtf
+echo $test
