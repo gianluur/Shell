@@ -1,4 +1,6 @@
 ls
-tobia
+mkdir test
+history
+touch file
 ls
-lsls -liaeza -lials -lials -liaeza -lia
+clear

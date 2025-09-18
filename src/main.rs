@@ -1,13 +1,14 @@
 use std::{
     collections::HashMap,
     env,
+    fmt::write,
     fs::{self, File, OpenOptions},
     io::{self, Write},
     path::PathBuf,
     process::Command,
 };
 
-use termion::{event::Key, input::TermRead};
+use termion::{event::Key, input::TermRead, raw::IntoRawMode};
 
 fn print_prompt() -> () {
     let path: PathBuf =
@@ -20,9 +21,11 @@ fn print_prompt() -> () {
         .expect("[SHELL ERROR] Couldn't flush stdout");
 }
 
-fn read_line() -> String {
+fn read_line(config: &mut Config) -> String {
     let mut input: String = String::new();
-    let mut stdout = io::stdout().lock();
+    let mut stdout = io::stdout()
+        .into_raw_mode()
+        .expect("[SHELL ERROR] Couldn't set raw mode");
 
     for character in io::stdin().keys() {
         match character.expect("[SHELL ERROR] Error while reading input") {
@@ -32,17 +35,55 @@ fn read_line() -> String {
                 input.pop();
                 write!(stdout, "\x1B[D \x1B[D").expect("[SHELL ERROR] Coudln't write to stdout");
                 stdout.flush().expect("[SHELL ERROR] Couldn't flush stdout");
+                config.history_position = 0;
             }
 
             Key::Char(character) => {
                 input.push(character);
+                write!(stdout, "{}", character).expect("[SHELL ERROR] Couldn't write to stdout");
+                stdout.flush().expect("[SHELL ERROR] Couldn't flush stdout");
+                config.history_position = 0;
+            }
+
+            //TODO: This arrow navigation is a bit weird, but it works
+            Key::Up => {
+                if config.history_position < config.history_vector.len() - 1
+                    && config.history_position != 0
+                {
+                    config.history_position += 1;
+                }
+
+                write!(stdout, "\r\x1B[2K").expect("[SHELL ERROR] Couldn't clear line");
+                print_prompt();
+
+                write!(stdout, "{}", config.history_vector[config.history_position])
+                    .expect("[SHELL ERROR] Couldn't write to stdout");
+                stdout.flush().expect("[SHELL ERROR] Couldn't flush stdout");
+
+                if config.history_position == 0 {
+                    config.history_position += 1;
+                }
+            }
+
+            Key::Down => {
+                if config.history_position > 0 {
+                    config.history_position -= 1;
+                }
+
+                write!(stdout, "\r\x1B[2K").expect("[SHELL ERROR] Couldn't clear line");
+                print_prompt();
+
+                write!(stdout, "{}", config.history_vector[config.history_position])
+                    .expect("[SHELL ERROR] Couldn't write to stdout");
+                stdout.flush().expect("[SHELL ERROR] Couldn't flush stdout");
             }
 
             _ => {}
         }
     }
+    write!(stdout, "\n").expect("[SHELL ERROR] Couldn't write to stdout");
 
-    return input.trim().to_string();
+    return format!("{}\n", input.trim());
 }
 
 fn parse_line(line: &str) -> Vec<&str> {
@@ -105,19 +146,38 @@ fn history(args: &[&str]) -> Result<(), String> {
 
 struct Config {
     history_file: File,
+    history_vector: Vec<String>,
+    history_position: usize,
     builtins: HashMap<String, fn(&[&str]) -> Result<(), String>>,
 }
 
 fn init() -> Result<Config, io::Error> {
-    if !fs::exists("src/history")? {
-        fs::create_dir("src/history")?;
+    //const MAX_HISTORY_ENTRIES: u8 = 100;
+    const HISTORY_FOLDER_PATH: &str = "src/history";
+
+    if !fs::exists(HISTORY_FOLDER_PATH)? {
+        fs::create_dir(HISTORY_FOLDER_PATH)?;
     }
 
+    let history_file_path: String = format!("{}/history.txt", HISTORY_FOLDER_PATH);
     let history_file: File = OpenOptions::new()
         .read(true)
         .append(true)
         .create(true)
-        .open("src/history/history.txt")?;
+        .open(&history_file_path)?;
+
+    //TODO: Improve perfromances by not loading all the file in memory
+    let history_position: usize = 0;
+    let mut history_vector: Vec<String>;
+    if history_file.metadata()?.len() > 0 {
+        history_vector = fs::read_to_string(&history_file_path)?
+            .lines()
+            .map(|line| line.to_string())
+            .collect();
+        history_vector.reverse();
+    } else {
+        history_vector = Vec::new();
+    }
 
     let mut builtins: HashMap<String, fn(&[&str]) -> Result<(), String>> = HashMap::new();
     builtins.insert("cd".to_string(), cd);
@@ -125,6 +185,8 @@ fn init() -> Result<Config, io::Error> {
 
     Ok(Config {
         history_file,
+        history_vector,
+        history_position,
         builtins,
     })
 }
@@ -142,13 +204,14 @@ fn main() {
 
     loop {
         print_prompt();
-        let line: String = read_line();
-        if let Err(error) = config.history_file.write(line.as_bytes()) {
+        let line: String = read_line(&mut config);
+        if let Err(error) = config.history_file.write(&line.as_bytes()) {
             eprintln!(
                 "[SHELL ERROR] Couldn't write to last command to history:\n {:#?}",
                 error
             );
         }
+        config.history_vector.push(line.clone());
 
         let tokens: Vec<&str> = parse_line(&line);
         execute(&tokens, &config.builtins);
