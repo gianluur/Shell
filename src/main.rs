@@ -1,7 +1,6 @@
 use std::{
     collections::HashMap,
     env,
-    fmt::write,
     fs::{self, File, OpenOptions},
     io::{self, Write},
     path::PathBuf,
@@ -45,12 +44,9 @@ fn read_line(config: &mut Config) -> String {
                 config.history_position = 0;
             }
 
-            //TODO: This arrow navigation is a bit weird, but it works
             Key::Up => {
-                if config.history_position < config.history_vector.len() - 1
-                    && config.history_position != 0
-                {
-                    config.history_position += 1;
+                if config.history_position > 0 {
+                    config.history_position -= 1;
                 }
 
                 write!(stdout, "\r\x1B[2K").expect("[SHELL ERROR] Couldn't clear line");
@@ -59,15 +55,11 @@ fn read_line(config: &mut Config) -> String {
                 write!(stdout, "{}", config.history_vector[config.history_position])
                     .expect("[SHELL ERROR] Couldn't write to stdout");
                 stdout.flush().expect("[SHELL ERROR] Couldn't flush stdout");
-
-                if config.history_position == 0 {
-                    config.history_position += 1;
-                }
             }
 
             Key::Down => {
-                if config.history_position > 0 {
-                    config.history_position -= 1;
+                if config.history_position < config.history_vector.len() - 1 {
+                    config.history_position += 1;
                 }
 
                 write!(stdout, "\r\x1B[2K").expect("[SHELL ERROR] Couldn't clear line");
@@ -144,6 +136,11 @@ fn history(args: &[&str]) -> Result<(), String> {
     Ok(())
 }
 
+fn exit(_args: &[&str]) -> Result<(), String> {
+    println!("Goodbye!");
+    std::process::exit(0);
+}
+
 struct Config {
     history_file: File,
     history_vector: Vec<String>,
@@ -152,7 +149,7 @@ struct Config {
 }
 
 fn init() -> Result<Config, io::Error> {
-    //const MAX_HISTORY_ENTRIES: u8 = 100;
+    const MAX_HISTORY_ENTRIES: u8 = 100;
     const HISTORY_FOLDER_PATH: &str = "src/history";
 
     if !fs::exists(HISTORY_FOLDER_PATH)? {
@@ -166,22 +163,24 @@ fn init() -> Result<Config, io::Error> {
         .create(true)
         .open(&history_file_path)?;
 
-    //TODO: Improve perfromances by not loading all the file in memory
-    let history_position: usize = 0;
-    let mut history_vector: Vec<String>;
+    let mut history_vector: Vec<String> = Vec::new();
     if history_file.metadata()?.len() > 0 {
-        history_vector = fs::read_to_string(&history_file_path)?
-            .lines()
-            .map(|line| line.to_string())
-            .collect();
-        history_vector.reverse();
-    } else {
-        history_vector = Vec::new();
+        let mut count: u8 = 0;
+        for line in fs::read_to_string(&history_file_path)?.lines() {
+            history_vector.push(line.to_string());
+            count += 1;
+
+            if count >= MAX_HISTORY_ENTRIES {
+                break;
+            }
+        }
     }
+    let history_position: usize = history_vector.len();
 
     let mut builtins: HashMap<String, fn(&[&str]) -> Result<(), String>> = HashMap::new();
     builtins.insert("cd".to_string(), cd);
     builtins.insert("history".to_string(), history);
+    builtins.insert("exit".to_string(), exit);
 
     Ok(Config {
         history_file,
