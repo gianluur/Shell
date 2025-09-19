@@ -5,6 +5,7 @@ use std::{
     io::{self, Write},
     path::PathBuf,
     process::Command,
+    usize,
 };
 
 use termion::{event::Key, input::TermRead, raw::IntoRawMode, raw::RawTerminal};
@@ -27,15 +28,24 @@ fn read_line(config: &mut Config) -> (String, Vec<usize>) {
         .expect("[SHELL ERROR] Couldn't set raw mode");
     let mut substitutions_index = Vec::new();
 
+    let mut should_escape: bool = false;
+    let mut escape_position: usize = usize::MAX; //idk what placeholder value i could use here
+
     for character in io::stdin().keys() {
         match character.expect("[SHELL ERROR] Error while reading input") {
-            Key::Char('\n') => break,
+            Key::Char('\n') => {
+                if should_escape {
+                    input.remove(escape_position);
+                }
+
+                break;
+            }
 
             Key::Backspace => {
                 if !input.is_empty() {
                     input.pop();
                     write!(stdout, "\x1B[D \x1B[D")
-                        .expect("[SHELL ERROR] Coudln't write to stdout");
+                        .expect("[SHELL ERROR] Couldn't write to stdout");
                     stdout.flush().expect("[SHELL ERROR] Couldn't flush stdout");
                     config.history_position = 0;
                 }
@@ -43,20 +53,31 @@ fn read_line(config: &mut Config) -> (String, Vec<usize>) {
 
             Key::Char(character) => {
                 input.push(character);
+
+                if character == '\\' {
+                    should_escape = true;
+                    escape_position = input.len() - 1;
+                }
+
+                if !should_escape {
+                    if character == '$' {
+                        substitutions_index.push(input.len() - 1);
+                    }
+                }
+
                 write!(stdout, "{}", character).expect("[SHELL ERROR] Couldn't write to stdout");
                 stdout.flush().expect("[SHELL ERROR] Couldn't flush stdout");
                 config.history_position = 0;
-
-                if character == '$' {
-                    substitutions_index.push(input.len() - 1);
-                }
             }
 
             Key::Up => {
+                input.clear();
                 if config.history_position > 0 {
                     config.history_position -= 1;
                 }
 
+                input.push_str(&config.history_vector[config.history_position]);
+
                 write!(stdout, "\r\x1B[2K").expect("[SHELL ERROR] Couldn't clear line");
                 print_prompt();
 
@@ -64,12 +85,14 @@ fn read_line(config: &mut Config) -> (String, Vec<usize>) {
                     .expect("[SHELL ERROR] Couldn't write to stdout");
                 stdout.flush().expect("[SHELL ERROR] Couldn't flush stdout");
             }
-
             Key::Down => {
+                input.clear();
                 if config.history_position < config.history_vector.len() - 1 {
                     config.history_position += 1;
                 }
 
+                input.push_str(&config.history_vector[config.history_position]);
+
                 write!(stdout, "\r\x1B[2K").expect("[SHELL ERROR] Couldn't clear line");
                 print_prompt();
 
@@ -77,12 +100,10 @@ fn read_line(config: &mut Config) -> (String, Vec<usize>) {
                     .expect("[SHELL ERROR] Couldn't write to stdout");
                 stdout.flush().expect("[SHELL ERROR] Couldn't flush stdout");
             }
-
             _ => {}
         }
     }
     write!(stdout, "\r\n").expect("[SHELL ERROR] Couldn't write to stdout");
-
     stdout.flush().expect("[SHELL ERROR] Couldn't flush stdout");
 
     return (format!("{}\n", input.trim()), substitutions_index);
@@ -111,7 +132,7 @@ fn execute(tokens: &[&str], builtins: &HashMap<String, fn(&[&str]) -> Result<(),
         match command.status() {
             Ok(status) => {
                 if !status.success() {
-                    eprintln!("[SHELL ERROR] {:#?}", status.code());
+                    // eprintln!("[SHELL ERROR] {:?}", status.code());
                 }
             }
             Err(_) => {
@@ -122,11 +143,15 @@ fn execute(tokens: &[&str], builtins: &HashMap<String, fn(&[&str]) -> Result<(),
 }
 
 fn cd(args: &[&str]) -> Result<(), String> {
-    if args.len() < 2 {
-        return Err("Error: the 'cd' command requires a path".to_string());
-    }
+    let directory: String = match args.len() < 2 {
+        true => match env::var("HOME") {
+            Ok(var) => var,
+            Err(error) => return Err(format!("Error: {}", error)),
+        },
+        false => args[1].to_string(),
+    };
 
-    if let Err(error) = env::set_current_dir(args[1]) {
+    if let Err(error) = env::set_current_dir(directory) {
         return Err(format!("Error: {}", error));
     }
 
@@ -154,7 +179,9 @@ fn exit(_args: &[&str]) -> Result<(), String> {
 //TODO: Add check to make confirm the user choice to update the variable
 fn export(args: &[&str]) -> Result<(), String> {
     if args.len() < 2 {
-        return Err("Usage: export name=value".to_string());
+        for (key, value) in env::vars() {
+            println!("{}={}", key, value);
+        }
     }
 
     let parts: Vec<&str> = args[1].splitn(2, '=').collect();
@@ -272,6 +299,10 @@ fn main() {
     loop {
         print_prompt();
         let (mut line, substitutions_index) = read_line(&mut config);
+        if line.len() <= 1 {
+            continue;
+        }
+
         if let Err(error) = config.history_file.write(&line.as_bytes()) {
             eprintln!(
                 "[SHELL ERROR] Couldn't write to last command to history:\n {:#?}",
