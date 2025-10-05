@@ -1,0 +1,86 @@
+[
+  {
+    "command": "echo \"bug\"",
+    "exit_code": 0,
+    "time": "Fri, 26 Sep 2025 20:54:44 GMT",
+    "cwd": "/home/shxqow/Documents/Projects/rshell"
+  },
+  {
+    "command": "echo \"ciao\ntobia\nagain\nandagain\nandagainagain\"",
+    "exit_code": 0,
+    "time": "Fri, 26 Sep 2025 20:54:31 GMT",
+    "cwd": "/home/shxqow/Documents/Projects/rshell"
+  },
+  {
+    "command": "echo \"test\nciao\ntobia\"",
+    "exit_code": 0,
+    "time": "Fri, 26 Sep 2025 20:54:26 GMT",
+    "cwd": "/home/shxqow/Documents/Projects/rshell"
+  },
+  {
+    "command": "ls",
+    "exit_code": 0,
+    "time": "Fri, 26 Sep 2025 20:54:22 GMT",
+    "cwd": "/home/shxqow/Documents/Projects/rshell"
+  },
+  {
+    "command": "clear",
+    "exit_code": 0,
+    "time": "Tue, 30 Sep 2025 18:02:36 GMT",
+    "cwd": "/home/shxqow/Documents/Projects/rshell"
+  },
+  {
+    "command": "echo \"adding\"",
+    "exit_code": 0,
+    "time": "Sun, 05 Oct 2025 10:54:41 GMT",
+    "cwd": "/home/shxqow/Documents/Projects/rshell"
+  },
+  {
+    "command": "ls",
+    "exit_code": null,
+    "time": "",
+    "cwd": "/home/shxqow/Documents/Projects/rshell"
+  },
+  {
+    "command": "ls",
+    "exit_code": 0,
+    "time": "Sun, 05 Oct 2025 11:13:56 GMT",
+    "cwd": "/home/shxqow/Documents/Projects/rshell"
+  },
+  {
+    "command": "echo \"adding\"",
+    "exit_code": null,
+    "time": "",
+    "cwd": "/home/shxqow/Documents/Projects/rshell"
+  },
+  {
+    "command": "echo \"adding\"",
+    "exit_code": 0,
+    "time": "Sun, 05 Oct 2025 11:13:58 GMT",
+    "cwd": "/home/shxqow/Documents/Projects/rshell"
+  },
+  {
+    "command": "echo \"test\"",
+    "exit_code": null,
+    "time": "",
+    "cwd": "/home/shxqow/Documents/Projects/rshell"
+  },
+  {
+    "command": "echo \"test\"",
+    "exit_code": 0,
+    "time": "Sun, 05 Oct 2025 11:14:13 GMT",
+    "cwd": "/home/shxqow/Documents/Projects/rshell"
+  },
+  {
+    "command": "echo \"test\ntobia\"",
+    "exit_code": null,
+    "time": "",
+    "cwd": "/home/shxqow/Documents/Projects/rshell"
+  },
+  {
+    "command": "echo \"test\ntobia\"",
+    "exit_code": 0,
+    "time": "Sun, 05 Oct 2025 11:14:17 GMT",
+    "cwd": "/home/shxqow/Documents/Projects/rshell"
+  }
+]

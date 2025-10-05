@@ -2,23 +2,68 @@ use std::{
     collections::HashMap,
     env::{self, VarError},
     fs::{self, File, OpenOptions},
-    io::{self, Write},
+    io::{self, Seek, Write},
     path::PathBuf,
     process::Command,
     usize,
 };
 
+use chrono::Utc;
 use termion::{event::Key, input::TermRead, raw::IntoRawMode, raw::RawTerminal};
 
-fn print_prompt() -> () {
-    let path: PathBuf =
-        env::current_dir().expect("[SHELL ERROR] Couldn't read current working directory");
+fn get_cwd() -> PathBuf {
+    return env::current_dir().expect("[SHELL ERROR] Couldn't read current working directory");
+}
 
-    print!("{} $> ", &path.to_string_lossy());
+fn print_prompt(line_status: Option<&LineStatus>) -> () {
+    let path: PathBuf = get_cwd();
+
+    //TODO: I believe this statement can be simplified
+    match line_status {
+        Some(status) => {
+            if *status == LineStatus::OK {
+                print!("{} $> ", &path.to_string_lossy());
+            } else {
+                print!("> ");
+            }
+        }
+        None => print!("{} $> ", &path.to_string_lossy()),
+    }
 
     io::stdout()
         .flush()
         .expect("[SHELL ERROR] Couldn't flush stdout");
+}
+
+fn recall_command(stdout: &mut RawTerminal<io::Stdout>, config: &mut Config) -> usize {
+    let commands = config.history_vector[config.history_position]
+        .command
+        .lines()
+        .enumerate();
+
+    write!(stdout, "\r\x1B[2K").expect("[SHELL ERROR] Couldn't clear line");
+    print_prompt(None);
+
+    let mut was_multi_line: usize = 1;
+    for (i, line) in commands {
+        if i == 0 {
+            write!(stdout, "{}", line).expect("[SHELL ERROR] Couldn't write to stdout"); // first line after prompt
+            stdout.flush().expect("[SHELL ERROR] Couldn't flush stdout");
+        } else {
+            write!(stdout, "\r\n> {}", line).expect("[SHELL ERROR] Couldn't write to stdout"); // continuation lines with a marker
+            stdout.flush().expect("[SHELL ERROR] Couldn't flush stdout");
+            was_multi_line += 1;
+        }
+    }
+
+    return was_multi_line;
+}
+
+fn clear_lines(stdout: &mut RawTerminal<io::Stdout>, lines_printed: usize) {
+    for _ in 1..lines_printed {
+        write!(stdout, "\x1b[2K\x1b[1A").expect("[SHELL ERROR] Couldn't move up and clear line");
+        stdout.flush().expect("[SHELL ERROR] Couldn't flush stdout");
+    }
 }
 
 fn read_line(config: &mut Config) -> (String, Vec<usize>) {
@@ -29,7 +74,8 @@ fn read_line(config: &mut Config) -> (String, Vec<usize>) {
     let mut substitutions_index = Vec::new();
 
     let mut should_escape: bool = false;
-    let mut escape_position: usize = usize::MAX; //idk what placeholder value i could use here
+    let mut escape_position: usize = usize::MAX;
+    let mut lines_printed: usize = 1;
 
     for character in io::stdin().keys() {
         match character.expect("[SHELL ERROR] Error while reading input") {
@@ -37,7 +83,7 @@ fn read_line(config: &mut Config) -> (String, Vec<usize>) {
                 if should_escape {
                     input.remove(escape_position);
                 }
-
+                config.history_position = config.history_vector.len();
                 break;
             }
 
@@ -47,7 +93,7 @@ fn read_line(config: &mut Config) -> (String, Vec<usize>) {
                     write!(stdout, "\x1B[D \x1B[D")
                         .expect("[SHELL ERROR] Couldn't write to stdout");
                     stdout.flush().expect("[SHELL ERROR] Couldn't flush stdout");
-                    config.history_position = 0;
+                    config.history_position = config.history_vector.len();
                 }
             }
 
@@ -65,84 +111,134 @@ fn read_line(config: &mut Config) -> (String, Vec<usize>) {
                     }
                 }
 
+                config.history_position = config.history_vector.len();
+
                 write!(stdout, "{}", character).expect("[SHELL ERROR] Couldn't write to stdout");
                 stdout.flush().expect("[SHELL ERROR] Couldn't flush stdout");
-                config.history_position = 0;
             }
 
             Key::Up => {
+                if lines_printed > 1 {
+                    clear_lines(&mut stdout, lines_printed);
+                }
+
                 input.clear();
                 if config.history_position > 0 {
                     config.history_position -= 1;
                 }
 
-                input.push_str(&config.history_vector[config.history_position]);
-
-                write!(stdout, "\r\x1B[2K").expect("[SHELL ERROR] Couldn't clear line");
-                print_prompt();
-
-                write!(stdout, "{}", config.history_vector[config.history_position])
-                    .expect("[SHELL ERROR] Couldn't write to stdout");
-                stdout.flush().expect("[SHELL ERROR] Couldn't flush stdout");
+                input.push_str(&config.history_vector[config.history_position].command);
+                lines_printed = recall_command(&mut stdout, config);
             }
             Key::Down => {
+                if lines_printed > 1 {
+                    clear_lines(&mut stdout, lines_printed);
+                }
+
                 input.clear();
                 if config.history_position < config.history_vector.len() - 1 {
                     config.history_position += 1;
                 }
 
-                input.push_str(&config.history_vector[config.history_position]);
-
-                write!(stdout, "\r\x1B[2K").expect("[SHELL ERROR] Couldn't clear line");
-                print_prompt();
-
-                write!(stdout, "{}", config.history_vector[config.history_position])
-                    .expect("[SHELL ERROR] Couldn't write to stdout");
-                stdout.flush().expect("[SHELL ERROR] Couldn't flush stdout");
+                input.push_str(&config.history_vector[config.history_position].command);
+                lines_printed = recall_command(&mut stdout, config);
             }
+
             _ => {}
         }
     }
     write!(stdout, "\r\n").expect("[SHELL ERROR] Couldn't write to stdout");
     stdout.flush().expect("[SHELL ERROR] Couldn't flush stdout");
 
-    return (format!("{}\n", input.trim()), substitutions_index);
+    return (format!("{}", input.trim()), substitutions_index);
 }
 
-fn parse_line(line: &str) -> Vec<&str> {
-    return line.trim().split_whitespace().collect();
+#[derive(PartialEq)]
+enum LineStatus {
+    OK,
+    INCOMPLETE,
 }
 
-fn execute(tokens: &[&str], builtins: &HashMap<String, fn(&[&str]) -> Result<(), String>>) -> () {
-    if tokens.is_empty() {
-        return;
+fn parse_line(line: &str, line_status: &mut LineStatus) -> Vec<String> {
+    let mut tokens: Vec<String> = Vec::new();
+    let mut current_token: String = String::new();
+
+    let mut inside_string: bool = match line_status {
+        LineStatus::INCOMPLETE => true,
+        LineStatus::OK => false,
+    };
+
+    for character in line.trim().chars() {
+        if character == '\"' || character == '\'' {
+            if !inside_string {
+                inside_string = true
+            } else {
+                tokens.push(current_token.clone());
+                inside_string = false;
+                current_token.clear();
+            }
+        } else if character.is_whitespace() && !inside_string {
+            if !current_token.is_empty() {
+                tokens.push(current_token.clone());
+                current_token.clear();
+            }
+        } else {
+            current_token.push(character);
+        }
     }
 
-    let program: &str = tokens[0];
-    let args: &[&str] = &tokens[1..];
+    if inside_string {
+        *line_status = LineStatus::INCOMPLETE;
+        current_token.push('\n');
+        tokens.push(current_token);
+    } else {
+        if !current_token.is_empty() {
+            tokens.push(current_token);
+        }
+        *line_status = LineStatus::OK;
+    }
+
+    tokens
+}
+
+fn execute(
+    tokens: &Vec<String>,
+    builtins: &HashMap<String, fn(&Vec<String>) -> Result<(), String>>,
+) -> Option<i32> {
+    if tokens.is_empty() {
+        return None;
+    }
+
+    let program: &str = &tokens[0];
+    let args: &[String] = &tokens[1..];
 
     if let Some(builtin) = builtins.get(program) {
         if let Err(error) = builtin(tokens) {
             eprintln!("[SHELL ERROR] {:#?}", error);
+            return Some(1);
         }
+        return Some(0);
     } else {
         let mut command: Command = Command::new(program);
         command.args(args);
 
         match command.status() {
             Ok(status) => {
+                let output: Option<i32> = status.code();
                 if !status.success() {
-                    // eprintln!("[SHELL ERROR] {:?}", status.code());
+                    eprintln!("[SHELL ERROR] {:?}", output);
                 }
+                return output;
             }
             Err(_) => {
                 eprintln!("[SHELL] Command '{}' wasn't found", &program);
+                return None;
             }
         }
     }
 }
 
-fn cd(args: &[&str]) -> Result<(), String> {
+fn cd(args: &Vec<String>) -> Result<(), String> {
     let directory: String = match args.len() < 2 {
         true => match env::var("HOME") {
             Ok(var) => var,
@@ -158,7 +254,7 @@ fn cd(args: &[&str]) -> Result<(), String> {
     Ok(())
 }
 
-fn history(args: &[&str]) -> Result<(), String> {
+fn history(args: &Vec<String>) -> Result<(), String> {
     println!("History: ");
     let contents = match fs::read_to_string(&args[1]) {
         Ok(contents) => contents,
@@ -171,17 +267,17 @@ fn history(args: &[&str]) -> Result<(), String> {
     Ok(())
 }
 
-fn exit(_args: &[&str]) -> Result<(), String> {
+fn exit(_args: &Vec<String>) -> Result<(), String> {
     println!("Goodbye!");
     std::process::exit(0);
 }
 
-//TODO: Add check to make confirm the user choice to update the variable
-fn export(args: &[&str]) -> Result<(), String> {
+fn export(args: &Vec<String>) -> Result<(), String> {
     if args.len() < 2 {
         for (key, value) in env::vars() {
             println!("{}={}", key, value);
         }
+        return Ok(());
     }
 
     let parts: Vec<&str> = args[1].splitn(2, '=').collect();
@@ -197,13 +293,13 @@ fn export(args: &[&str]) -> Result<(), String> {
     Ok(())
 }
 
-fn unset(args: &[&str]) -> Result<(), String> {
+fn unset(args: &Vec<String>) -> Result<(), String> {
     if args.len() < 2 {
         return Err("Usage: unset <name>".to_string());
     }
 
     unsafe {
-        env::remove_var(args[1]);
+        env::remove_var(&args[1]);
     }
 
     Ok(())
@@ -211,41 +307,35 @@ fn unset(args: &[&str]) -> Result<(), String> {
 
 struct Config {
     history_file: File,
-    history_vector: Vec<String>,
+    history_vector: Vec<HistoryEntry>,
     history_position: usize,
-    builtins: HashMap<String, fn(&[&str]) -> Result<(), String>>,
+    builtins: HashMap<String, fn(&Vec<String>) -> Result<(), String>>,
 }
 
 fn init() -> Result<Config, io::Error> {
-    const MAX_HISTORY_ENTRIES: u8 = 100;
     const HISTORY_FOLDER_PATH: &str = "src/history";
 
     if !fs::exists(HISTORY_FOLDER_PATH)? {
         fs::create_dir(HISTORY_FOLDER_PATH)?;
     }
 
-    let history_file_path: String = format!("{}/history.txt", HISTORY_FOLDER_PATH);
+    let history_file_path: String = format!("{}/history.json", HISTORY_FOLDER_PATH);
     let history_file: File = OpenOptions::new()
         .read(true)
         .append(true)
         .create(true)
         .open(&history_file_path)?;
 
-    let mut history_vector: Vec<String> = Vec::new();
-    if history_file.metadata()?.len() > 0 {
-        let mut count: u8 = 0;
-        for line in fs::read_to_string(&history_file_path)?.lines() {
-            history_vector.push(line.to_string());
-            count += 1;
+    let history_vector: Vec<HistoryEntry> = if history_file.metadata()?.len() > 0 {
+        let contents: String = fs::read_to_string(&history_file_path)?;
+        serde_json::from_str(&contents).unwrap_or_default()
+    } else {
+        Vec::new()
+    };
 
-            if count >= MAX_HISTORY_ENTRIES {
-                break;
-            }
-        }
-    }
     let history_position: usize = history_vector.len();
 
-    let mut builtins: HashMap<String, fn(&[&str]) -> Result<(), String>> = HashMap::new();
+    let mut builtins: HashMap<String, fn(&Vec<String>) -> Result<(), String>> = HashMap::new();
     builtins.insert("cd".to_string(), cd);
     builtins.insert("history".to_string(), history);
     builtins.insert("exit".to_string(), exit);
@@ -268,13 +358,13 @@ fn expand_environment_variables(
 
     for &index in substitutions_index.iter().rev() {
         let end_of_substitution = new_line[index..]
-            .find(|c: char| c.is_whitespace() || c == ',')
+            .find(|c: char| c.is_whitespace() || c == ',' || c == '\'' || c == '\"')
             .unwrap_or_else(|| new_line.len() - index);
 
         let end_index: usize = index + end_of_substitution;
         let environment_variable: &str = &new_line[index + 1..end_index];
 
-        let substitution_value = match env::var(environment_variable) {
+        let substitution_value: String = match env::var(environment_variable) {
             Ok(value) => value,
             Err(error) => return Err(error),
         };
@@ -283,6 +373,27 @@ fn expand_environment_variables(
     }
 
     Ok(new_line)
+}
+
+#[derive(serde_derive::Serialize, serde_derive::Deserialize, Debug, Clone)]
+struct HistoryEntry {
+    command: String,
+    exit_code: Option<i32>,
+    time: String,
+    cwd: PathBuf,
+}
+
+fn add_history_entry(entry: HistoryEntry, config: &mut Config) {
+    config.history_vector.push(entry);
+
+    config.history_file.set_len(0).unwrap();
+    config
+        .history_file
+        .seek(std::io::SeekFrom::Start(0))
+        .unwrap();
+
+    serde_json::to_writer_pretty(&mut config.history_file, &config.history_vector).unwrap();
+    config.history_file.flush().unwrap();
 }
 
 fn main() {
@@ -297,28 +408,59 @@ fn main() {
     };
 
     loop {
-        print_prompt();
-        let (mut line, substitutions_index) = read_line(&mut config);
-        if line.len() <= 1 {
-            continue;
-        }
-
-        if let Err(error) = config.history_file.write(&line.as_bytes()) {
-            eprintln!(
-                "[SHELL ERROR] Couldn't write to last command to history:\n {:#?}",
-                error
-            );
-        }
-        config.history_vector.push(line.clone());
-        line = match expand_environment_variables(&line, substitutions_index) {
-            Ok(new_line) => new_line,
-            Err(error) => {
-                println!("[SHELL ERROR] {}", error);
-                continue;
-            }
+        let mut entry: HistoryEntry = HistoryEntry {
+            command: String::new(),
+            exit_code: None,
+            time: String::new(),
+            cwd: get_cwd(),
         };
 
-        let tokens: Vec<&str> = parse_line(&line);
-        execute(&tokens, &config.builtins);
+        let mut tokens: Vec<String> = Vec::new();
+        let mut line_status: LineStatus = LineStatus::OK;
+        loop {
+            print_prompt(Some(&line_status));
+
+            let (mut line, substitutions_index): (String, Vec<usize>) = read_line(&mut config);
+            if line.len() <= 1 {
+                continue;
+            }
+
+            entry.command.push_str(&line);
+            entry.command.push('\n');
+
+            line = match expand_environment_variables(&line, substitutions_index) {
+                Ok(new_line) => new_line,
+                Err(error) => {
+                    println!("[SHELL ERROR] {}", error);
+                    continue;
+                }
+            };
+
+            let current_tokens: Vec<String> = parse_line(&line, &mut line_status);
+
+            if tokens.is_empty() {
+                tokens.extend_from_slice(&current_tokens);
+            } else {
+                if !current_tokens.is_empty() {
+                    if let Some(last) = tokens.last_mut() {
+                        last.push_str(&current_tokens[0]);
+                    }
+                    if current_tokens.len() > 1 {
+                        tokens.extend_from_slice(&current_tokens[1..]);
+                    }
+                }
+            }
+
+            if line_status == LineStatus::OK {
+                entry.command = entry.command.trim_end().to_owned();
+                config.history_vector.push(entry.clone());
+                config.history_position = config.history_vector.len();
+                break;
+            }
+        }
+
+        entry.exit_code = execute(&tokens, &config.builtins);
+        entry.time = Utc::now().format("%a, %d %b %Y %H:%M:%S GMT").to_string();
+        add_history_entry(entry, &mut config);
     }
 }
