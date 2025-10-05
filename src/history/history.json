@@ -1,86 +1,68 @@
 [
   {
-    "command": "echo \"bug\"",
+    "command": "git status",
     "exit_code": 0,
-    "time": "Fri, 26 Sep 2025 20:54:44 GMT",
-    "cwd": "/home/shxqow/Documents/Projects/rshell"
+    "time": "Sun, 05 Oct 2025 13:40:01 GMT",
+    "cwd": "/home/user/Documents/project"
   },
   {
-    "command": "echo \"ciao\ntobia\nagain\nandagain\nandagainagain\"",
+    "command": "ls -l /etc | grep 'conf'",
     "exit_code": 0,
-    "time": "Fri, 26 Sep 2025 20:54:31 GMT",
-    "cwd": "/home/shxqow/Documents/Projects/rshell"
+    "time": "Sun, 05 Oct 2025 13:40:45 GMT",
+    "cwd": "/home/user"
   },
   {
-    "command": "echo \"test\nciao\ntobia\"",
+    "command": "find . -name '*.log' -delete",
     "exit_code": 0,
-    "time": "Fri, 26 Sep 2025 20:54:26 GMT",
-    "cwd": "/home/shxqow/Documents/Projects/rshell"
+    "time": "Sun, 05 Oct 2025 13:41:12 GMT",
+    "cwd": "/home/user/Documents/project/logs"
   },
   {
-    "command": "ls",
+    "command": "echo \"Hello World\nThis is the second line\nAnd the third\"",
     "exit_code": 0,
-    "time": "Fri, 26 Sep 2025 20:54:22 GMT",
-    "cwd": "/home/shxqow/Documents/Projects/rshell"
+    "time": "Sun, 05 Oct 2025 13:41:35 GMT",
+    "cwd": "/home/user"
   },
   {
-    "command": "clear",
+    "command": "sudo apt update && sudo apt upgrade -y",
     "exit_code": 0,
-    "time": "Tue, 30 Sep 2025 18:02:36 GMT",
-    "cwd": "/home/shxqow/Documents/Projects/rshell"
+    "time": "Sun, 05 Oct 2025 13:42:05 GMT",
+    "cwd": "/home/user"
   },
   {
-    "command": "echo \"adding\"",
+    "command": "cat /proc/cpuinfo | grep 'model name' | head -n 1",
     "exit_code": 0,
-    "time": "Sun, 05 Oct 2025 10:54:41 GMT",
-    "cwd": "/home/shxqow/Documents/Projects/rshell"
+    "time": "Sun, 05 Oct 2025 13:42:40 GMT",
+    "cwd": "/root"
   },
   {
-    "command": "ls",
-    "exit_code": null,
-    "time": "",
-    "cwd": "/home/shxqow/Documents/Projects/rshell"
-  },
-  {
-    "command": "ls",
+    "command": "echo \"Configuration\nServer_IP=192.168.1.100\nTimeout=30\"",
     "exit_code": 0,
-    "time": "Sun, 05 Oct 2025 11:13:56 GMT",
-    "cwd": "/home/shxqow/Documents/Projects/rshell"
+    "time": "Sun, 05 Oct 2025 13:43:10 GMT",
+    "cwd": "/home/user/config"
   },
   {
-    "command": "echo \"adding\"",
-    "exit_code": null,
-    "time": "",
-    "cwd": "/home/shxqow/Documents/Projects/rshell"
+    "command": "python3 script.py argument1 argument2",
+    "exit_code": 1,
+    "time": "Sun, 05 Oct 2025 13:43:35 GMT",
+    "cwd": "/home/user/Documents/project/src"
   },
   {
-    "command": "echo \"adding\"",
+    "command": "ssh user@remotehost 'ls -a /tmp'",
     "exit_code": 0,
-    "time": "Sun, 05 Oct 2025 11:13:58 GMT",
-    "cwd": "/home/shxqow/Documents/Projects/rshell"
+    "time": "Sun, 05 Oct 2025 13:44:01 GMT",
+    "cwd": "/home/user"
   },
   {
-    "command": "echo \"test\"",
-    "exit_code": null,
-    "time": "",
-    "cwd": "/home/shxqow/Documents/Projects/rshell"
+    "command": "echo \"Error: File not found\nCheck path: /var/log/app.log\"",
+    "exit_code": 0,
+    "time": "Sun, 05 Oct 2025 13:44:28 GMT",
+    "cwd": "/home/user/logs"
   },
   {
     "command": "echo \"test\"",
     "exit_code": 0,
-    "time": "Sun, 05 Oct 2025 11:14:13 GMT",
-    "cwd": "/home/shxqow/Documents/Projects/rshell"
-  },
-  {
-    "command": "echo \"test\ntobia\"",
-    "exit_code": null,
-    "time": "",
-    "cwd": "/home/shxqow/Documents/Projects/rshell"
-  },
-  {
-    "command": "echo \"test\ntobia\"",
-    "exit_code": 0,
-    "time": "Sun, 05 Oct 2025 11:14:17 GMT",
+    "time": "Sun, 05 Oct 2025 11:46:54 GMT",
     "cwd": "/home/shxqow/Documents/Projects/rshell"
   }
 ]

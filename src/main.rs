@@ -50,7 +50,7 @@ fn recall_command(stdout: &mut RawTerminal<io::Stdout>, config: &mut Config) -> 
             write!(stdout, "{}", line).expect("[SHELL ERROR] Couldn't write to stdout"); // first line after prompt
             stdout.flush().expect("[SHELL ERROR] Couldn't flush stdout");
         } else {
-            write!(stdout, "\r\n> {}", line).expect("[SHELL ERROR] Couldn't write to stdout"); // continuation lines with a marker
+            write!(stdout, "\r\n{}", line).expect("[SHELL ERROR] Couldn't write to stdout"); // continuation lines with a marker
             stdout.flush().expect("[SHELL ERROR] Couldn't flush stdout");
             was_multi_line += 1;
         }
@@ -83,7 +83,6 @@ fn read_line(config: &mut Config) -> (String, Vec<usize>) {
                 if should_escape {
                     input.remove(escape_position);
                 }
-                config.history_position = config.history_vector.len();
                 break;
             }
 
@@ -93,7 +92,6 @@ fn read_line(config: &mut Config) -> (String, Vec<usize>) {
                     write!(stdout, "\x1B[D \x1B[D")
                         .expect("[SHELL ERROR] Couldn't write to stdout");
                     stdout.flush().expect("[SHELL ERROR] Couldn't flush stdout");
-                    config.history_position = config.history_vector.len();
                 }
             }
 
@@ -110,8 +108,6 @@ fn read_line(config: &mut Config) -> (String, Vec<usize>) {
                         substitutions_index.push(input.len() - 1);
                     }
                 }
-
-                config.history_position = config.history_vector.len();
 
                 write!(stdout, "{}", character).expect("[SHELL ERROR] Couldn't write to stdout");
                 stdout.flush().expect("[SHELL ERROR] Couldn't flush stdout");
@@ -453,8 +449,6 @@ fn main() {
 
             if line_status == LineStatus::OK {
                 entry.command = entry.command.trim_end().to_owned();
-                config.history_vector.push(entry.clone());
-                config.history_position = config.history_vector.len();
                 break;
             }
         }
