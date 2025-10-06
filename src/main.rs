@@ -9,10 +9,19 @@ use std::{
 };
 
 use chrono::Utc;
-use termion::{event::Key, input::TermRead, raw::IntoRawMode, raw::RawTerminal};
+use termion::{
+    cursor::DetectCursorPos,
+    event::Key,
+    input::TermRead,
+    raw::{IntoRawMode, RawTerminal},
+};
 
 fn get_cwd() -> PathBuf {
     return env::current_dir().expect("[SHELL ERROR] Couldn't read current working directory");
+}
+
+fn get_prompt_length() -> usize {
+    return get_cwd().to_str().unwrap().len() + 4; //<-- 4 is for the ' $> ' prompt
 }
 
 fn print_prompt(line_status: Option<&LineStatus>) -> () {
@@ -92,6 +101,25 @@ fn read_line(config: &mut Config) -> (String, Vec<usize>) {
                     write!(stdout, "\x1B[D \x1B[D")
                         .expect("[SHELL ERROR] Couldn't write to stdout");
                     stdout.flush().expect("[SHELL ERROR] Couldn't flush stdout");
+
+                    let cursor_pos: (u16, u16) = stdout
+                        .cursor_pos()
+                        .expect("[SHELL ERROR] Couldn't get cursor position");
+
+                    let lines: std::str::Lines<'_> = input.lines();
+
+                    if cursor_pos.0 == 1 && input.len() > 0 && lines.clone().count() == 1 {
+                        write!(stdout, "\x1B[1A\x1B[{}C", input.len() + get_prompt_length())
+                            .expect("[SHELL ERROR] Couldn't write to stdout");
+                    }
+
+                    if cursor_pos.0 == 1 && input.len() > 0 && lines.clone().count() > 1 {
+                        if let Some(last_line) = lines.clone().last() {
+                            let last_line_len = last_line.chars().count();
+                            write!(stdout, "\x1B[1A\x1B[{}C", last_line_len + 1)
+                                .expect("[SHELL ERROR] Couldn't write to stdout");
+                        }
+                    }
                 }
             }
 
@@ -393,8 +421,6 @@ fn add_history_entry(entry: HistoryEntry, config: &mut Config) {
 }
 
 fn main() {
-    println!("Hello Shell!");
-
     let mut config: Config = match init() {
         Ok(config) => config,
         Err(error) => {

@@ -42,27 +42,21 @@
     "cwd": "/home/user/config"
   },
   {
-    "command": "python3 script.py argument1 argument2",
-    "exit_code": 1,
-    "time": "Sun, 05 Oct 2025 13:43:35 GMT",
-    "cwd": "/home/user/Documents/project/src"
-  },
-  {
-    "command": "ssh user@remotehost 'ls -a /tmp'",
-    "exit_code": 0,
-    "time": "Sun, 05 Oct 2025 13:44:01 GMT",
-    "cwd": "/home/user"
-  },
-  {
     "command": "echo \"Error: File not found\nCheck path: /var/log/app.log\"",
     "exit_code": 0,
     "time": "Sun, 05 Oct 2025 13:44:28 GMT",
     "cwd": "/home/user/logs"
   },
   {
-    "command": "echo \"test\"",
+    "command": "echo \"Configuration\nServer_IP=192.168.1.100\"",
     "exit_code": 0,
-    "time": "Sun, 05 Oct 2025 11:46:54 GMT",
+    "time": "Mon, 06 Oct 2025 17:59:32 GMT",
+    "cwd": "/home/shxqow/Documents/Projects/rshell"
+  },
+  {
+    "command": "echo \"Configuration\"",
+    "exit_code": 0,
+    "time": "Mon, 06 Oct 2025 17:59:41 GMT",
     "cwd": "/home/shxqow/Documents/Projects/rshell"
   }
 ]
