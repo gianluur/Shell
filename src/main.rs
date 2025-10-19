@@ -75,8 +75,16 @@ fn clear_lines(stdout: &mut RawTerminal<io::Stdout>, lines_printed: usize) {
     }
 }
 
+fn get_cursor_position(stdout: &mut RawTerminal<io::Stdout>) -> (u16, u16) {
+    return stdout
+        .cursor_pos()
+        .expect("[SHELL ERROR] Couldn't get cursor position");
+}
+
 fn read_line(config: &mut Config) -> (String, Vec<usize>) {
     let mut input: String = String::new();
+    let mut input_current_index: usize = input.len();
+
     let mut stdout: RawTerminal<io::Stdout> = io::stdout()
         .into_raw_mode()
         .expect("[SHELL ERROR] Couldn't set raw mode");
@@ -97,14 +105,29 @@ fn read_line(config: &mut Config) -> (String, Vec<usize>) {
 
             Key::Backspace => {
                 if !input.is_empty() {
-                    input.pop();
-                    write!(stdout, "\x1B[D \x1B[D")
-                        .expect("[SHELL ERROR] Couldn't write to stdout");
-                    stdout.flush().expect("[SHELL ERROR] Couldn't flush stdout");
+                    // let cursor_pos: (u16, u16) = get_cursor_position(&mut stdout);
 
-                    let cursor_pos: (u16, u16) = stdout
-                        .cursor_pos()
-                        .expect("[SHELL ERROR] Couldn't get cursor position");
+                    input.remove(input_current_index - 1);
+                    if input.len() > 0 && input_current_index > 0 {
+                        input_current_index -= 1;
+                    }
+
+                    if input_current_index != input.len() {
+                        write!(
+                            stdout,
+                            "\x1B[D \x1B[D\x1b[K{}\x1b[{}D",
+                            &input[input_current_index..],
+                            input.len() - input_current_index
+                        )
+                        .expect("[SHELL ERROR] Couldn't write to stdout");
+                        stdout.flush().expect("[SHELL ERROR] Couldn't flush stdout");
+                    } else {
+                        write!(stdout, "\x1B[D \x1B[D")
+                            .expect("[SHELL ERROR] Couldn't write to stdout");
+                        stdout.flush().expect("[SHELL ERROR] Couldn't flush stdout");
+                    }
+
+                    let cursor_pos: (u16, u16) = get_cursor_position(&mut stdout);
 
                     let lines: std::str::Lines<'_> = input.lines();
 
@@ -124,7 +147,8 @@ fn read_line(config: &mut Config) -> (String, Vec<usize>) {
             }
 
             Key::Char(character) => {
-                input.push(character);
+                input.insert(input_current_index, character);
+                input_current_index += 1;
 
                 if character == '\\' {
                     should_escape = true;
@@ -138,6 +162,15 @@ fn read_line(config: &mut Config) -> (String, Vec<usize>) {
                 }
 
                 write!(stdout, "{}", character).expect("[SHELL ERROR] Couldn't write to stdout");
+
+                let rest: &str = &input[input_current_index..];
+                write!(stdout, "{}", rest).expect("[SHELL ERROR] Couldn't write stdout");
+
+                if !rest.is_empty() {
+                    write!(stdout, "\x1B[{}D", rest.len())
+                        .expect("[SHELL ERROR] Couldn't move cursor left");
+                }
+
                 stdout.flush().expect("[SHELL ERROR] Couldn't flush stdout");
             }
 
@@ -152,8 +185,10 @@ fn read_line(config: &mut Config) -> (String, Vec<usize>) {
                 }
 
                 input.push_str(&config.history_vector[config.history_position].command);
+                input_current_index = input.len();
                 lines_printed = recall_command(&mut stdout, config);
             }
+
             Key::Down => {
                 if lines_printed > 1 {
                     clear_lines(&mut stdout, lines_printed);
@@ -165,7 +200,24 @@ fn read_line(config: &mut Config) -> (String, Vec<usize>) {
                 }
 
                 input.push_str(&config.history_vector[config.history_position].command);
+                input_current_index = input.len();
                 lines_printed = recall_command(&mut stdout, config);
+            }
+
+            Key::Left => {
+                if input.len() > 0 && input_current_index > 0 {
+                    input_current_index -= 1;
+                    write!(stdout, "\x1B[1D").expect("[SHELL ERROR] Couldn't write to stdout");
+                    stdout.flush().expect("[SHELL ERROR] Couldn't flush stdout");
+                }
+            }
+
+            Key::Right => {
+                if input.len() > 0 && input_current_index < input.len() {
+                    input_current_index += 1;
+                    write!(stdout, "\x1B[1C").expect("[SHELL ERROR] Couldn't write to stdout");
+                    stdout.flush().expect("[SHELL ERROR] Couldn't flush stdout");
+                }
             }
 
             _ => {}

@@ -58,5 +58,41 @@
     "exit_code": 0,
     "time": "Mon, 06 Oct 2025 17:59:41 GMT",
     "cwd": "/home/shxqow/Documents/Projects/rshell"
+  },
+  {
+    "command": "echo \"test\ntobia\"",
+    "exit_code": 0,
+    "time": "Thu, 09 Oct 2025 18:56:03 GMT",
+    "cwd": "/home/shxqow/Documents/Projects/rshell"
+  },
+  {
+    "command": "echo \"test\ntobia\"\"\n\"\"\"\"\"",
+    "exit_code": 0,
+    "time": "Thu, 09 Oct 2025 18:56:22 GMT",
+    "cwd": "/home/shxqow/Documents/Projects/rshell"
+  },
+  {
+    "command": "echo \"test\ntobia\"",
+    "exit_code": 0,
+    "time": "Thu, 09 Oct 2025 18:56:24 GMT",
+    "cwd": "/home/shxqow/Documents/Projects/rshell"
+  },
+  {
+    "command": "echo \"test\ntobia\"\"\n\"\"\n\"\"\"\"\n\"\"\"\"\"\"\n\"\"\"\"\"\"\"\"\"\"\n\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\n\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"",
+    "exit_code": 0,
+    "time": "Thu, 09 Oct 2025 18:56:53 GMT",
+    "cwd": "/home/shxqow/Documents/Projects/rshell"
+  },
+  {
+    "command": "echo \"tesdsadat\"",
+    "exit_code": 0,
+    "time": "Sun, 19 Oct 2025 14:50:46 GMT",
+    "cwd": "/home/shxqow/Documents/Projects/rshell"
+  },
+  {
+    "command": "echo \"teddssadsadsadsadsadddaaat\"",
+    "exit_code": 0,
+    "time": "Sun, 19 Oct 2025 14:58:19 GMT",
+    "cwd": "/home/shxqow/Documents/Projects/rshell"
   }
 ]
