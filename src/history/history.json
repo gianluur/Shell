@@ -94,5 +94,11 @@
     "exit_code": 0,
     "time": "Sun, 19 Oct 2025 14:58:19 GMT",
     "cwd": "/home/shxqow/Documents/Projects/rshell"
+  },
+  {
+    "command": "echo \"tet\"",
+    "exit_code": 0,
+    "time": "Sun, 19 Oct 2025 15:48:05 GMT",
+    "cwd": "/home/shxqow/Documents/Projects/rshell"
   }
 ]

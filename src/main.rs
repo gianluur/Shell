@@ -105,10 +105,8 @@ fn read_line(config: &mut Config) -> (String, Vec<usize>) {
 
             Key::Backspace => {
                 if !input.is_empty() {
-                    // let cursor_pos: (u16, u16) = get_cursor_position(&mut stdout);
-
-                    input.remove(input_current_index - 1);
                     if input.len() > 0 && input_current_index > 0 {
+                        input.remove(input_current_index - 1);
                         input_current_index -= 1;
                     }
 
@@ -236,8 +234,8 @@ enum LineStatus {
 }
 
 fn parse_line(line: &str, line_status: &mut LineStatus) -> Vec<String> {
-    let mut tokens: Vec<String> = Vec::new();
-    let mut current_token: String = String::new();
+    let mut command: Vec<String> = Vec::new();
+    let mut token: String = String::new();
 
     let mut inside_string: bool = match line_status {
         LineStatus::INCOMPLETE => true,
@@ -249,32 +247,32 @@ fn parse_line(line: &str, line_status: &mut LineStatus) -> Vec<String> {
             if !inside_string {
                 inside_string = true
             } else {
-                tokens.push(current_token.clone());
+                command.push(token.clone());
                 inside_string = false;
-                current_token.clear();
+                token.clear();
             }
         } else if character.is_whitespace() && !inside_string {
-            if !current_token.is_empty() {
-                tokens.push(current_token.clone());
-                current_token.clear();
+            if !token.is_empty() {
+                command.push(token.clone());
+                token.clear();
             }
         } else {
-            current_token.push(character);
+            token.push(character);
         }
     }
 
     if inside_string {
         *line_status = LineStatus::INCOMPLETE;
-        current_token.push('\n');
-        tokens.push(current_token);
+        token.push('\n');
+        command.push(token);
     } else {
-        if !current_token.is_empty() {
-            tokens.push(current_token);
+        if !token.is_empty() {
+            command.push(token);
         }
         *line_status = LineStatus::OK;
     }
 
-    tokens
+    command
 }
 
 fn execute(
