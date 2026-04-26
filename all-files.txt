@@ -1,0 +1,2491 @@
+// builtins.rs
+
+use crate::{
+    context::Context,
+    error::{ShellError, ShellPhase},
+    jobs::JobState,
+    terminal::Terminal,
+};
+use anyhow::{Context as AnyhowContext, Result};
+use std::{collections::HashMap, env, path::PathBuf};
+
+pub type Builtin = fn(&[String], &mut Context, &mut Terminal) -> Result<i32>;
+
+pub struct BuiltIns {
+    programs: HashMap<String, Builtin>,
+}
+
+impl BuiltIns {
+    pub fn new() -> Self {
+        let mut programs: HashMap<String, Builtin> = HashMap::new();
+        programs.insert("cd".to_string(), Self::cd);
+        programs.insert("exit".to_string(), Self::exit);
+        programs.insert("jobs".to_string(), Self::jobs);
+        programs.insert("fg".to_string(), Self::fg);
+        programs.insert("bg".to_string(), Self::bg);
+
+        Self { programs }
+    }
+
+    pub fn get(&self, name: &str) -> Option<Builtin> {
+        self.programs.get(name).copied()
+    }
+
+    pub fn cd(args: &[String], _: &mut Context, _: &mut Terminal) -> Result<i32> {
+        let target = if !args.is_empty() {
+            PathBuf::from(&args[0])
+        } else {
+            let home = env::var("HOME");
+            if home.is_err() {
+                return Self::error("cd", "HOME environment variable not set");
+            }
+            PathBuf::from(home.unwrap())
+        };
+
+        env::set_current_dir(&target)
+            .with_context(|| format!("cd: Failed to change directory to '{}'", target.display()))?;
+
+        Ok(0)
+    }
+
+    pub fn exit(_args: &[String], _: &mut Context, _: &mut Terminal) -> Result<i32> {
+        Err(ShellError::exit())?
+    }
+
+    pub fn jobs(_: &[String], context: &mut Context, terminal: &mut Terminal) -> Result<i32> {
+        for (_, job) in &context.jobs.table {
+            terminal.println(&job.to_string())?;
+        }
+
+        Ok(0)
+    }
+
+    pub fn fg(args: &[String], context: &mut Context, terminal: &mut Terminal) -> Result<i32> {
+        let job_id = Self::job_id_from_args("fg", args, context)?;
+
+        let (pgid, command, pids) = match context.jobs.table.get(&job_id) {
+            Some(job) => (job.pgid, job.command.clone(), job.pids.clone()),
+            None => {
+                return Self::error(
+                    "fg",
+                    "Unexpected error, job id doesn't match any entry in the job table",
+                );
+            }
+        };
+
+        let exit_code;
+        unsafe {
+            // We send the SIGCONT signal to all the child procceses in that gpid
+            libc::kill(-pgid, libc::SIGCONT);
+
+            if libc::tcsetpgrp(libc::STDIN_FILENO, pgid) == -1 {
+                return Self::error("fg", "Failed to give terminal to job");
+            }
+
+            let job = context.jobs.table.get_mut(&job_id).unwrap();
+            job.state = JobState::Running;
+
+            exit_code = context.jobs.wait_foreground(
+                context.gpid,
+                terminal,
+                pgid,
+                command,
+                &pids,
+                false,
+            )?;
+        }
+
+        Ok(exit_code)
+    }
+
+    pub fn bg(args: &[String], context: &mut Context, terminal: &mut Terminal) -> Result<i32> {
+        let job_id = Self::job_id_from_args("bg", args, context)?;
+        let job = match context.jobs.table.get_mut(&job_id) {
+            Some(job) => job,
+            None => {
+                return Self::error(
+                    "bg",
+                    "Unexpected error, job id doesn't match any entry in the job table",
+                );
+            }
+        };
+        unsafe {
+            libc::kill(-job.pgid, libc::SIGCONT);
+        }
+
+        job.state = JobState::Running;
+        terminal.println(&format!("[{}] {}", job_id, job.command))?;
+
+        Ok(0)
+    }
+
+    fn job_id_from_args(
+        command_name: &str,
+        args: &[String],
+        context: &mut Context,
+    ) -> Result<usize> {
+        if !args.is_empty() && args.len() != 1 {
+            return Self::error(command_name, "Only one argument is expected");
+        }
+
+        let job_id: usize;
+        if args.len() == 1 {
+            let arg = &args[0];
+            if !arg.starts_with('%') {
+                return Self::error(
+                    command_name,
+                    "Argument must always be in the format %<job id>",
+                );
+            }
+
+            let job_id_str = &arg[1..];
+            if job_id_str.is_empty() || !job_id_str.chars().all(|c| c.is_ascii_digit()) {
+                return Self::error(command_name, "Invalid job ID: must be a number after %");
+            }
+
+            job_id = job_id_str.parse::<usize>().unwrap();
+        } else {
+            let possible_job_id = context
+                .jobs
+                .table
+                .iter()
+                .filter(|(_, job)| matches!(job.state, JobState::Stopped))
+                .map(|(&id, _)| id)
+                .max();
+
+            job_id = match possible_job_id {
+                Some(id) => id,
+                None => return Self::error(command_name, "No current jobs"),
+            };
+        }
+
+        Ok(job_id)
+    }
+
+    fn error<T>(name: &str, message: &str) -> Result<T> {
+        Err(anyhow::Error::new(ShellError {
+            phase: ShellPhase::Executor,
+            command: Some(name.to_string()),
+            message: message.into(),
+        }))
+    }
+}
+//context.rs
+
+use crate::{builtins::BuiltIns, jobs::Jobs, signals::SignalHandler};
+
+use libc::{self};
+use std::{env, path::PathBuf};
+
+pub struct Context {
+    directory: PathBuf,
+    pub gpid: libc::pid_t,
+    pub builtins: BuiltIns,
+    pub jobs: Jobs,
+    pub signals: SignalHandler,
+    pub last_exit_code: i32
+}
+
+impl Context {
+    pub fn new() -> Self {
+        let mut context = Context {
+            directory: PathBuf::from("/"),
+            gpid: Self::setup_pgid(),
+            jobs: Jobs::new(),
+            builtins: BuiltIns::new(),
+            signals: SignalHandler::new(),
+            last_exit_code: 0
+        };
+        context.update_cwd();
+
+        context
+    }
+
+    pub fn update_cwd(&mut self) -> &PathBuf {
+        if let Ok(cwd) = env::current_dir() {
+            self.directory = cwd;
+        } else {
+            self.directory = env::var("HOME")
+                .map(PathBuf::from)
+                .unwrap_or_else(|_| PathBuf::from("/"));
+        }
+        &self.directory
+    }
+
+    pub fn setup_pgid() -> libc::pid_t {
+        unsafe {
+            let gpid = libc::getpid();
+
+            // Make the shell leader of it's own process group
+            libc::setpgid(0, 0);
+
+            // Give the shell the terminal
+            libc::tcsetpgrp(libc::STDIN_FILENO, gpid);
+
+            gpid
+        }
+    }
+}
+//editor.rs
+
+use anyhow::{Context as AnyhowContext, Result};
+use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyModifiers};
+
+use crate::{context::Context, prompt::Prompt, terminal::Terminal};
+
+struct Buffer {
+    data: String,
+    index: usize,
+}
+
+impl Buffer {
+    pub fn new() -> Self {
+        Self {
+            data: String::new(),
+            index: 0,
+        }
+    }
+
+    /// Inserts data and updates the index by a character (UTF8)
+    pub fn insert(&mut self, character: char) {
+        self.data.insert(self.index, character);
+        self.index += character.len_utf8();
+    }
+
+    /// Clears the previous character, returns true if it removed something false otherwise
+    pub fn backspace(&mut self) -> bool {
+        if self.index == 0 {
+            return false;
+        }
+        // Step back by the previous character's byte length, not just 1
+        self.index -= self.prev_char().len_utf8();
+        self.data.remove(self.index);
+        true
+    }
+
+    /// Returns the next word in the buffer
+    pub fn next_word(&self) -> usize {
+        let remaining = &self.data[self.index..];
+        remaining
+            .char_indices()
+            .skip_while(|(_, c)| !c.is_whitespace()) // Skip current word
+            .skip_while(|(_, c)| c.is_whitespace()) // Skip spaces
+            .map(|(i, _)| self.index + i)
+            .next()
+            .unwrap_or(self.data.len()) // If no more words, go to end
+    }
+
+    /// Returns the previous word in the buffer
+    pub fn prev_word(&self) -> usize {
+        let left_portion = &self.data[..self.index];
+        left_portion
+            .char_indices()
+            .rev()
+            .skip_while(|(_, c)| c.is_whitespace()) // Skip trailing spaces
+            .skip_while(|(_, c)| !c.is_whitespace()) // Skip the word
+            .map(|(i, _)| i)
+            .next()
+            // We usually want the start of the word after the space we found
+            .map(|i| {
+                self.data[i..self.index]
+                    .char_indices()
+                    .find(|(_, c)| !c.is_whitespace())
+                    .map(|(sub_i, _)| i + sub_i)
+                    .unwrap_or(i)
+            })
+            .unwrap_or(0)
+    }
+
+    /// Returns the previous character in the buffer
+    fn prev_char(&self) -> char {
+        self.data[..self.index].chars().next_back().unwrap()
+    }
+
+    /// Returns the next character in the buffer
+    fn next_char(&self) -> char {
+        self.data[self.index..].chars().next().unwrap()
+    }
+
+    /// Get's the buffer lenght
+    pub fn len(&self) -> usize {
+        self.data.len()
+    }
+
+    /// Clears the buffer efficiently and returns it to shell
+    pub fn take(&mut self) -> String {
+        self.index = 0;
+        std::mem::take(&mut self.data)
+    }
+
+    pub fn content(&mut self) -> String {
+        self.data.clone()
+    }
+
+    pub fn set(&mut self, new_value: &str) {
+        self.index = new_value.len();
+        self.data = new_value.to_string();
+    }
+}
+
+pub struct Editor {
+    buffer: Buffer,
+    row: u16,
+    history: Vec<String>,
+    history_row: usize,
+}
+
+impl Editor {
+    pub fn new() -> Self {
+        Self {
+            buffer: Buffer::new(),
+            row: 0,
+            history: Vec::new(),
+            history_row: 0,
+        }
+    }
+
+    // Called by Shell before each read_line so the editor knows the current prompt
+    pub fn set_prompt(&mut self, terminal: &mut Terminal) -> Result<()> {
+        let (_, row) = terminal.cursor_pos()?;
+        self.row = row;
+        Ok(())
+    }
+
+    pub fn read_line(
+        &mut self,
+        context: &mut Context,
+        terminal: &mut Terminal,
+        prompt: &Prompt,
+    ) -> Result<String> {
+        self.redraw(context, terminal, prompt, false)?;
+
+        loop {
+            if context.signals.child_finished() {
+                self.redraw(context, terminal, prompt, true)?;
+            }
+
+            // Prints the current output of any background process
+            for line in context.jobs.get_bg_job_stdout()? {
+                terminal.print(&line)?;
+            }
+
+            let (_, row) = terminal.cursor_pos()?;
+            self.row = row;
+
+            // Check for keyboard input with short timeout
+            if event::poll(std::time::Duration::from_millis(50))? {
+                match event::read().context("Failed to read event")? {
+                    Event::Key(KeyEvent {
+                        code, modifiers, ..
+                    }) => {
+                        if modifiers.contains(KeyModifiers::CONTROL) {
+                            match code {
+                                KeyCode::Char('c') => self.ctrl_c(context, terminal, prompt)?,
+                                KeyCode::Char('l') => self.ctrl_l(context, terminal, prompt)?,
+                                _ => {}
+                            }
+                        } else if modifiers.contains(KeyModifiers::ALT) {
+                            match code {
+                                KeyCode::Left => self.alt_left(context, terminal, prompt)?,
+                                KeyCode::Right => self.alt_right(context, terminal, prompt)?,
+                                _ => {}
+                            }
+                        } else {
+                            match code {
+                                KeyCode::Char(c) => {
+                                    self.buffer.insert(c);
+                                    self.redraw(context, terminal, prompt, false)?;
+                                }
+                                KeyCode::Enter => return self.enter(terminal),
+                                KeyCode::Backspace => self.backspace(context, terminal, prompt)?,
+                                KeyCode::Up => self.up_arrow(context, terminal, prompt)?,
+                                KeyCode::Down => self.down_arrow(context, terminal, prompt)?,
+                                KeyCode::Left => self.left_arrow(terminal)?,
+                                KeyCode::Right => self.right_arrow(terminal)?,
+                                KeyCode::Home => self.home_key(terminal, prompt)?,
+                                KeyCode::End => self.end_key(terminal, prompt)?,
+                                _ => {}
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+
+    fn ctrl_c(
+        &mut self,
+        context: &mut Context,
+        terminal: &mut Terminal,
+        prompt: &Prompt,
+    ) -> Result<()> {
+        self.buffer.take();
+        terminal.clear_line(self.row)?;
+        self.redraw(context, terminal, prompt, false)
+    }
+
+    fn ctrl_l(
+        &mut self,
+        context: &mut Context,
+        terminal: &mut Terminal,
+        prompt: &Prompt,
+    ) -> Result<()> {
+        self.row = 0;
+        terminal.clear_screen()?;
+        terminal.move_to(0, 0)?;
+        self.redraw(context, terminal, prompt, false)
+    }
+
+    fn alt_left(
+        &mut self,
+        context: &mut Context,
+        terminal: &mut Terminal,
+        prompt: &Prompt,
+    ) -> Result<()> {
+        self.buffer.index = self.buffer.prev_word();
+        self.redraw(context, terminal, prompt, false)
+    }
+
+    fn alt_right(
+        &mut self,
+        context: &mut Context,
+        terminal: &mut Terminal,
+        prompt: &Prompt,
+    ) -> Result<()> {
+        self.buffer.index = self.buffer.next_word();
+        self.redraw(context, terminal, prompt, false)
+    }
+
+    fn enter(&mut self, terminal: &mut Terminal) -> Result<String> {
+        terminal.println("")?;
+        let line = self.buffer.content();
+        if !line.is_empty() && self.history.last() != Some(&line) {
+            self.history.push(line);
+        }
+        self.history_row = self.history.len();
+        Ok(self.buffer.take())
+    }
+
+    fn backspace(
+        &mut self,
+        context: &mut Context,
+        terminal: &mut Terminal,
+        prompt: &Prompt,
+    ) -> Result<()> {
+        if self.buffer.backspace() {
+            self.redraw(context, terminal, prompt, false)?;
+        }
+        Ok(())
+    }
+
+    fn up_arrow(
+        &mut self,
+        context: &mut Context,
+        terminal: &mut Terminal,
+        prompt: &Prompt,
+    ) -> Result<()> {
+        if self.history_row > 0 {
+            self.history_row -= 1;
+            self.buffer.set(&self.history[self.history_row]);
+            self.redraw(context, terminal, prompt, false)?;
+        }
+        Ok(())
+    }
+
+    fn down_arrow(
+        &mut self,
+        context: &mut Context,
+        terminal: &mut Terminal,
+        prompt: &Prompt,
+    ) -> Result<()> {
+        if self.history_row < self.history.len() {
+            self.history_row += 1;
+            let val = if self.history_row == self.history.len() {
+                ""
+            } else {
+                &self.history[self.history_row]
+            };
+            self.buffer.set(val);
+            self.redraw(context, terminal, prompt, false)?;
+        }
+        Ok(())
+    }
+
+    fn left_arrow(&mut self, terminal: &mut Terminal) -> Result<()> {
+        if self.buffer.index > 0 {
+            self.buffer.index -= self.buffer.prev_char().len_utf8();
+            terminal.move_left()?;
+        }
+        Ok(())
+    }
+
+    fn right_arrow(&mut self, terminal: &mut Terminal) -> Result<()> {
+        if self.buffer.index < self.buffer.len() {
+            self.buffer.index += self.buffer.next_char().len_utf8();
+            terminal.move_right()?;
+        }
+        Ok(())
+    }
+
+    fn home_key(&mut self, terminal: &mut Terminal, prompt: &Prompt) -> Result<()> {
+        self.buffer.index = 0;
+        terminal.move_to(prompt.len() as u16, self.row)
+    }
+
+    fn end_key(&mut self, terminal: &mut Terminal, prompt: &Prompt) -> Result<()> {
+        self.buffer.index = self.buffer.len();
+        terminal.move_to((self.buffer.index + prompt.len()) as u16, self.row)
+    }
+
+    fn redraw(
+        &mut self,
+        context: &mut Context,
+        terminal: &mut Terminal,
+        prompt: &Prompt,
+        child_finished: bool,
+    ) -> Result<()> {
+        if child_finished {
+            self.handle_child_finished(context, terminal)?;
+        }
+
+        terminal.clear_line(self.row)?;
+        terminal.print(&prompt.message)?;
+        terminal.print(&self.buffer.data)?;
+
+        let cursor_col = prompt.len() + self.buffer.index;
+        terminal.move_to(cursor_col as u16, self.row)?;
+
+        Ok(())
+    }
+
+    fn handle_child_finished(
+        &mut self,
+        context: &mut Context,
+        terminal: &mut Terminal,
+    ) -> Result<()> {
+        terminal.println("")?;
+        context.signals.child_finished();
+
+        context.jobs.update_table(terminal)?;
+
+        let notifications: Vec<String> = terminal.notifications.drain(..).collect();
+        for notification in notifications {
+            terminal.println(&notification)?;
+        }
+
+        let (_, row) = terminal.cursor_pos()?;
+        self.row = row;
+
+        Ok(())
+    }
+}
+// error.rs
+
+use std::fmt;
+
+#[derive(Debug)]
+pub enum ShellPhase {
+    Tokenizer,
+    Parser,
+    Expander,
+    Executor,
+}
+
+impl fmt::Display for ShellPhase {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        let name = match self {
+            ShellPhase::Tokenizer => "Tokenizer",
+            ShellPhase::Parser => "Parser",
+            ShellPhase::Expander => "Expander",
+            ShellPhase::Executor => "Executor",
+        };
+        write!(f, "{}", name)
+    }
+}
+
+#[derive(Debug)]
+pub struct ShellError {
+    pub phase: ShellPhase,
+    pub command: Option<String>,
+    pub message: String,
+}
+
+impl fmt::Display for ShellError {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        match &self.command {
+            Some(cmd) => write!(f, "[ERROR | {}] -> {}: {}", self.phase, cmd, self.message),
+            None => write!(f, "[ERROR | {}] -> {}", self.phase, self.message),
+        }
+    }
+}
+
+impl ShellError {
+    pub fn exit() -> Self {
+        Self {
+            phase: ShellPhase::Executor,
+            command: None,
+            message: "QUIT".to_string(),
+        }
+    }
+
+    pub fn is_exit(&self) -> bool {
+        matches!(self.phase, ShellPhase::Executor) && self.message == "QUIT"
+    }
+}
+
+impl std::error::Error for ShellError {}
+//executor.rs
+
+use crate::{
+    context::Context,
+    error::*,
+    jobs::{Job, JobState},
+    parser::{Command, Redirect, RedirectKind},
+    terminal::Terminal,
+};
+
+use anyhow::{Context as AnyhowContext, Ok, Result};
+use std::{ffi::CString, io, os::fd::RawFd};
+
+pub fn execute(context: &mut Context, command: Command, terminal: &mut Terminal) -> Result<i32> {
+    if let Command::Simple {
+        command: ref name,
+        ref args,
+        ..
+    } = command
+    {
+        if let Some(builtin) = context.builtins.get(name) {
+            let str_args: Vec<String> = args.iter().map(|a| a.to_string()).collect();
+            return builtin(&str_args, context, terminal);
+        }
+    }
+
+    match command {
+        Command::Simple { .. } => {
+            let pgid = spawn_process(
+                context,
+                command.clone(),
+                libc::STDIN_FILENO,
+                libc::STDOUT_FILENO,
+                None,
+                true,
+            )?;
+
+            context
+                .jobs
+                .wait_foreground(context.gpid, terminal, pgid, command, &[pgid], true)
+        }
+
+        Command::And(left, right) => {
+            let status = execute(context, *left, terminal)?;
+            if status == 0 {
+                execute(context, *right, terminal)
+            } else {
+                Ok(status)
+            }
+        }
+
+        Command::Or(left, right) => {
+            let status = execute(context, *left, terminal)?;
+            if status != 0 {
+                execute(context, *right, terminal)
+            } else {
+                Ok(status)
+            }
+        }
+
+        Command::Sequence(left, right) => {
+            execute(context, *left, terminal)?;
+            execute(context, *right, terminal)
+        }
+
+        Command::Background(command) => {
+            let mut fds = [0; 2];
+            unsafe {
+                if libc::pipe2(fds.as_mut_ptr(), libc::O_CLOEXEC) == -1 {
+                    return os_error();
+                }
+            }
+
+            let pipe_read = fds[0];
+            let pipe_write = fds[1];
+
+            unsafe {
+                let flags = libc::fcntl(pipe_read, libc::F_GETFL);
+                libc::fcntl(pipe_read, libc::F_SETFL, flags | libc::O_NONBLOCK);
+            }
+
+            if let Command::Simple { .. } = *command {
+                let pid = spawn_process(
+                    context,
+                    *command.clone(),
+                    libc::STDIN_FILENO,
+                    pipe_write,
+                    None,
+                    false,
+                )?;
+
+                unsafe { libc::close(pipe_write) };
+
+                let job_id = context.jobs.add(Job::new(
+                    pid,
+                    vec![pid],
+                    *command,
+                    JobState::Running,
+                    Some(pipe_read),
+                ));
+                terminal.println(&format!("[{}] {}", job_id, pid))?;
+
+                Ok(0)
+            } else {
+                let (gpid, pids) = spawn_piped(
+                    context,
+                    *command.clone(),
+                    libc::STDIN_FILENO,
+                    pipe_write,
+                    None,
+                    false,
+                )?;
+
+                unsafe { libc::close(pipe_write) };
+
+                let job_id = context.jobs.add(Job::new(
+                    gpid,
+                    pids.clone(),
+                    *command.clone(),
+                    JobState::Running,
+                    Some(pipe_read),
+                ));
+
+                terminal.print(&format!("[{}] ", job_id))?;
+                for pid in pids {
+                    terminal.print(&format!("{} ", pid))?;
+                }
+                terminal.println("")?;
+
+                Ok(0)
+            }
+        }
+
+        Command::Pipeline(..) => {
+            let (gpid, pids) = spawn_piped(
+                context,
+                command.clone(),
+                libc::STDIN_FILENO,
+                libc::STDOUT_FILENO,
+                None,
+                true,
+            )?;
+
+            context
+                .jobs
+                .wait_foreground(context.gpid, terminal, gpid, command, &pids, true)
+        }
+    }
+}
+
+fn spawn_process(
+    context: &mut Context,
+    command: Command,
+    stdin: RawFd,
+    stdout: RawFd,
+    pgid: Option<libc::pid_t>,
+    is_foreground: bool,
+) -> Result<libc::pid_t> {
+    match command {
+        Command::Simple {
+            command,
+            args,
+            redirects,
+        } => {
+            let str_args: Vec<String> = args.iter().map(|a| a.to_string()).collect();
+            let (command, args) = to_cstring(&command, &str_args)?;
+
+            unsafe {
+                // We do one final conversion from CString to const char*
+                let mut argv: Vec<*const libc::c_char> = args.iter().map(|s| s.as_ptr()).collect();
+                argv.push(std::ptr::null());
+
+                let pid = libc::fork();
+
+                if pid == -1 {
+                    return os_error();
+                }
+
+                if pid == 0 {
+                    // ── CHILD ──────────────────────────────────────────────────
+                    // Put the child in its own process group and give it the terminal
+                    libc::setpgid(0, pgid.unwrap_or(0));
+
+                    // Wire up stdin if it's coming from a pipe
+                    if stdin != libc::STDIN_FILENO {
+                        libc::dup2(stdin, libc::STDIN_FILENO);
+                        libc::close(stdin);
+                    }
+
+                    // Wire up stdout if it's going into a pipe
+                    if stdout != libc::STDOUT_FILENO {
+                        libc::dup2(stdout, libc::STDOUT_FILENO);
+                        libc::close(stdout);
+                    }
+
+                    // Handle file redirections (>, <, >>, 2>, 2>&1)
+                    if let Err(_) = set_stdio(redirects) {
+                        libc::_exit(1);
+                    }
+
+                    // Reset signals to defaults (shell may have ignored some)
+                    context.signals.reset();
+
+                    libc::execvp(command.as_ptr(), argv.as_ptr());
+
+                    // execvp only returns on failure
+                    libc::_exit(1);
+                } else {
+                    // ── PARENT ─────────────────────────────────────────────────
+
+                    // Race condition fix: parent also sets the child's pgid
+                    libc::setpgid(pid, pgid.unwrap_or(0));
+
+                    // If it's a foreground process and doesn't belong to a pipeline
+                    // give him the terminal
+                    if pgid.is_none() && is_foreground {
+                        libc::tcsetpgrp(libc::STDIN_FILENO, pid);
+                    }
+
+                    // Close the pipe ends we handed to the child — we don't need them
+                    if stdin != libc::STDIN_FILENO {
+                        libc::close(stdin);
+                    }
+                    if stdout != libc::STDOUT_FILENO {
+                        libc::close(stdout);
+                    }
+
+                    Ok(pid)
+                }
+            }
+        }
+
+        _ => unreachable!(),
+    }
+}
+
+fn spawn_piped(
+    context: &mut Context,
+    command: Command,
+    stdin: RawFd,
+    stdout: RawFd,
+    pgid: Option<libc::pid_t>,
+    is_foreground: bool,
+) -> Result<(libc::pid_t, Vec<libc::pid_t>)> {
+    match command {
+        Command::Simple { .. } => {
+            let pid = spawn_process(context, command, stdin, stdout, pgid, is_foreground)?;
+            Ok((pid, vec![pid]))
+        }
+
+        Command::Pipeline(left, right) => {
+            let mut fds = [0; 2];
+            unsafe {
+                // We pass libc::O_CLOEXEC directly into the creation call
+                // this allows the pipe ends to be automatically closed when the process
+                // calls exec
+                if libc::pipe2(fds.as_mut_ptr(), libc::O_CLOEXEC) == -1 {
+                    return os_error();
+                }
+            }
+
+            let pipe_read = fds[0];
+            let pipe_write = fds[1];
+
+            // Left side writes into the pipe — it must close the read end it doesn't use
+            let (pgid, mut pids) =
+                spawn_piped(context, *left, stdin, pipe_write, None, is_foreground)?;
+
+            // Right side reads from the pipe — it must close the write end it doesn't use
+            let (_, right_pids) = spawn_piped(
+                context,
+                *right,
+                pipe_read,
+                stdout,
+                Some(pgid),
+                is_foreground,
+            )?;
+
+            pids.extend(right_pids);
+
+            // We still close the pipes in the parent because O_CLOEXEC works only
+            // when the child calles exec() since the parent never does
+            // we still have to perform this clean up
+            unsafe {
+                libc::close(pipe_read);
+                libc::close(pipe_write);
+            }
+
+            Ok((pgid, pids))
+        }
+
+        _ => unreachable!(),
+    }
+}
+
+fn set_stdio(redirects: Vec<Redirect>) -> Result<()> {
+    for redirect in redirects {
+        match redirect.kind {
+            RedirectKind::ErrAndOut => {
+                // 2>&1 - no file opening, just duplication
+                unsafe {
+                    if libc::dup2(libc::STDOUT_FILENO, libc::STDERR_FILENO) == -1 {
+                        return os_error();
+                    }
+                }
+            }
+            _ => {
+                let path = match redirect.get_target_path() {
+                    Some(path) => CString::new(path.as_str()).with_context(|| {
+                        format!("Failed to convert target path to CString {}", path)
+                    })?,
+                    None => unreachable!(
+                        "Target path should be always configured for redirects except ErrAndOut"
+                    ),
+                };
+
+                let (flags, target_fd) = match redirect.kind {
+                    RedirectKind::In => (libc::O_RDONLY, libc::STDIN_FILENO),
+                    RedirectKind::Out => (
+                        libc::O_WRONLY | libc::O_CREAT | libc::O_TRUNC,
+                        libc::STDOUT_FILENO,
+                    ),
+                    RedirectKind::Append => (
+                        libc::O_WRONLY | libc::O_CREAT | libc::O_APPEND,
+                        libc::STDOUT_FILENO,
+                    ),
+                    RedirectKind::Err => (
+                        libc::O_WRONLY | libc::O_CREAT | libc::O_TRUNC,
+                        libc::STDERR_FILENO,
+                    ),
+                    _ => unreachable!(),
+                };
+
+                unsafe {
+                    let fd = libc::open(path.as_ptr(), flags, 0o644);
+                    if fd == -1 {
+                        return os_error();
+                    }
+                    if libc::dup2(fd, target_fd) == -1 {
+                        return os_error();
+                    }
+                    libc::close(fd);
+                }
+            }
+        }
+    }
+
+    Ok(())
+}
+
+fn to_cstring(raw_command: &str, raw_args: &Vec<String>) -> Result<(CString, Vec<CString>)> {
+    let command = CString::new(raw_command)
+        .with_context(|| format!("Failed to convert command '{}' to CString", raw_command))?;
+
+    let mut args = vec![command.clone()];
+
+    for arg in raw_args {
+        args.push(
+            CString::new(arg.as_str())
+                .with_context(|| format!("Failed to convert argument '{}' to CString", arg))?,
+        );
+    }
+
+    Ok((command, args))
+}
+
+fn os_error<T>() -> Result<T> {
+    error(&io::Error::last_os_error().to_string())
+}
+
+fn error<T>(message: &str) -> Result<T> {
+    Err(anyhow::Error::new(ShellError {
+        phase: ShellPhase::Executor,
+        command: None,
+        message: message.into(),
+    }))
+}
+//expander.rs
+
+use crate::error::{ShellError, ShellPhase};
+use anyhow::Result;
+use std::env;
+
+use crate::context::Context;
+use crate::parser::{Arg, Command};
+
+pub fn expand(context: &mut Context, command: Command) -> Result<Command> {
+    match command {
+        Command::Simple {
+            command,
+            args,
+            redirects,
+        } => {
+            let mut expanded_args: Vec<Arg> = Vec::new();
+            for arg in args {
+                let expanded_arg = match arg {
+                    Arg::Word(s) => Arg::Word(expand_string(context, s)?),
+                    Arg::DoubleQuoted(s) => Arg::DoubleQuoted(expand_string(context, s)?),
+                    Arg::SingleQuoted(s) => Arg::SingleQuoted(s),
+                };
+                expanded_args.push(expanded_arg);
+            }
+
+            Ok(Command::Simple {
+                command: expand_string(context, command)?,
+                args: expanded_args,
+                redirects,
+            })
+        }
+        Command::Pipeline(left, right) => Ok(Command::Pipeline(
+            Box::new(expand(context, *left)?),
+            Box::new(expand(context, *right)?),
+        )),
+        Command::And(left, right) => Ok(Command::And(
+            Box::new(expand(context, *left)?),
+            Box::new(expand(context, *right)?),
+        )),
+        Command::Or(left, right) => Ok(Command::Or(
+            Box::new(expand(context, *left)?),
+            Box::new(expand(context, *right)?),
+        )),
+        Command::Sequence(left, right) => Ok(Command::Sequence(
+            Box::new(expand(context, *left)?),
+            Box::new(expand(context, *right)?),
+        )),
+        Command::Background(cmd) => Ok(Command::Background(Box::new(expand(context, *cmd)?))),
+    }
+}
+
+fn expand_string(context: &mut Context, to_expand: String) -> Result<String> {
+    let mut expanded = String::new();
+    let mut chars = to_expand.char_indices().peekable();
+
+    while let Some((index, character)) = chars.next() {
+        match character {
+            '~' if index == 0 => {
+                // This should be the proper implementation since POSIX
+                // doesn't specify the standard for this situation
+                match env::var("HOME") {
+                    Ok(home) => expanded.push_str(&home),
+                    Err(_) => {
+                        expanded.push('~');
+                    }
+                }
+            }
+
+            '$' => {
+                let mut variable_name = String::new();
+                if chars.peek().is_some() && chars.peek().unwrap().1 == '{' {
+                    chars.next();
+
+                    let mut is_ok = false;
+                    while let Some(next) = chars.next() {
+                        if next.1 == '}' {
+                            is_ok = true;
+                            break;
+                        }
+                        variable_name.push(next.1);
+                    }
+
+                    if !is_ok {
+                        return error("Found unclosed variable expansion bracket '}'");
+                    }
+                } else {
+                    while let Some(&(_, next)) = chars.peek() {
+                        if next.is_alphanumeric() || next == '_' || next == '?' {
+                            chars.next();
+                            variable_name.push(next);
+                        } else {
+                            break;
+                        }
+                    }
+                }
+
+                if !variable_name.is_empty() {
+                    if variable_name == "?" {
+                        expanded.push_str(&context.last_exit_code.to_string());
+                    } else {
+                        let expanded_variable = env::var(variable_name).unwrap_or_default();
+                        expanded.push_str(&expanded_variable);
+                    }
+                }
+            }
+
+            _ => expanded.push(character),
+        }
+    }
+
+    Ok(expanded)
+}
+
+fn error<T>(message: &str) -> Result<T> {
+    Err(anyhow::Error::new(ShellError {
+        phase: ShellPhase::Expander, // Updated to Parser phase
+        command: None,
+        message: message.into(),
+    }))
+}
+
+// #[cfg(test)]
+// mod tests {
+//     use super::*;
+
+//     // Helper to simplify tests and handle the Result
+//     fn expand(input: &str) -> String {
+//         expand_string(input.to_string()).expect("Expansion failed unexpectedly")
+//     }
+
+//     #[test]
+//     fn test_plain_string() {
+//         assert_eq!(expand("hello world"), "hello world");
+//     }
+
+//     #[test]
+//     fn test_tilde_expansion() {
+//         // We handle the case where HOME might not be set in the test environment
+//         if let Ok(home) = env::var("HOME") {
+//             assert_eq!(expand("~/foo"), format!("{}/foo", home));
+//         } else {
+//             // If no HOME, POSIX says it stays as ~ based on your match logic
+//             assert_eq!(expand("~/foo"), "~/foo");
+//         }
+//     }
+
+//     #[test]
+//     fn test_tilde_not_at_start() {
+//         assert_eq!(expand("foo~bar"), "foo~bar");
+//     }
+
+//     #[test]
+//     fn test_variable_expansions() {
+//         // Setting env vars for the duration of this test
+//         unsafe {
+//             env::set_var("TEST_VAR", "hello");
+//         }
+
+//         assert_eq!(expand("$TEST_VAR"), "hello");
+//         assert_eq!(expand("hello $TEST_VAR"), "hello hello");
+//         assert_eq!(expand("${TEST_VAR}"), "hello");
+//         assert_eq!(expand("$TEST_VAR/foo"), "hello/foo");
+//     }
+
+//     #[test]
+//     fn test_undefined_variable() {
+//         // Ensure the var definitely doesn't exist
+//         unsafe {
+//             env::remove_var("UNDEFINED_VAR_XYZ");
+//         }
+//         assert_eq!(expand("$UNDEFINED_VAR_XYZ"), "");
+//     }
+
+//     #[test]
+//     fn test_lone_dollar() {
+//         // A lone $ with no alphanumeric chars following should probably stay a $
+//         // or follow your specific logic (currently it returns empty)
+//         assert_eq!(expand("$"), "");
+//     }
+
+//     #[test]
+//     fn test_unclosed_bracket_error() {
+//         let result = expand_string("${UNCLOSED".to_string());
+//         assert!(result.is_err());
+//         let err = result.unwrap_err().to_string();
+//         assert!(err.contains("unclosed variable expansion bracket"));
+//     }
+// }
+use crate::{parser::Command, terminal::Terminal};
+use anyhow::Result;
+use std::{collections::HashMap, fmt, os::fd::RawFd};
+
+pub enum JobState {
+    Running,
+    Stopped,
+}
+
+impl fmt::Display for JobState {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let state = match self {
+            JobState::Running => "Running",
+            JobState::Stopped => "Stopped",
+        };
+        write!(f, "{}", state)
+    }
+}
+
+pub struct Job {
+    pub pgid: libc::pid_t,
+    pub pids: Vec<libc::pid_t>,
+    pub command: Command,
+    pub state: JobState,
+    pub stdout_fd: Option<RawFd>, // Some for background, None for foreground
+    pub remaining: usize,
+}
+
+impl Job {
+    pub fn new(
+        pgid: libc::pid_t,
+        pids: Vec<libc::pid_t>,
+        command: Command,
+        state: JobState,
+        stdout_fd: Option<RawFd>,
+    ) -> Self {
+        Job {
+            pgid,
+            pids: pids.clone(),
+            command,
+            state,
+            stdout_fd,
+            remaining: pids.len(),
+        }
+    }
+
+    pub fn to_string(&self) -> String {
+        format!(
+            "PGID: {} | Command: {} | State: {}",
+            self.pgid, self.command, self.state,
+        )
+    }
+}
+
+pub struct Jobs {
+    pub table: HashMap<usize, Job>,
+    pub pgid_to_id: HashMap<libc::pid_t, usize>,
+    pub pid_to_id: HashMap<libc::pid_t, usize>,
+    pub next_job_id: usize,
+}
+
+impl Jobs {
+    pub fn new() -> Self {
+        Self {
+            table: HashMap::new(),
+            pgid_to_id: HashMap::new(),
+            pid_to_id: HashMap::new(),
+            next_job_id: 1,
+        }
+    }
+
+    pub fn add(&mut self, job: Job) -> usize {
+        let id = self.next_job_id;
+        self.pgid_to_id.insert(job.pgid, id);
+        for &pid in &job.pids {
+            self.pid_to_id.insert(pid, id);
+        }
+        self.table.insert(id, job);
+        self.next_job_id += 1;
+        id
+    }
+
+    pub fn remove(&mut self, id: usize) {
+        if let Some(job) = self.table.remove(&id) {
+            self.pgid_to_id.remove(&job.pgid);
+            for &pid in &job.pids {
+                self.pid_to_id.remove(&pid);
+            }
+            if let Some(fd) = job.stdout_fd {
+                unsafe {
+                    libc::close(fd);
+                }
+            }
+            if self.table.is_empty() {
+                self.next_job_id = 1;
+            }
+        }
+    }
+
+    pub fn get_entry(&mut self, pgid: libc::pid_t) -> Option<(usize, &mut Job)> {
+        let &id = self.pgid_to_id.get(&pgid)?;
+        let job = self.table.get_mut(&id)?;
+        Some((id, job))
+    }
+
+    pub fn get_entry_by_pid(&mut self, pid: libc::pid_t) -> Option<(usize, &mut Job)> {
+        let &id = self.pid_to_id.get(&pid)?;
+        let job = self.table.get_mut(&id)?;
+        Some((id, job))
+    }
+
+    pub fn update_table(&mut self, terminal: &mut Terminal) -> Result<()> {
+        unsafe {
+            loop {
+                let mut status = 0;
+
+                // For understanding this syscall refer here:
+                // https://man7.org/linux/man-pages/man3/wait.3p.html
+                // I would literlly just copy and paste the content otherwise
+                let pid = libc::waitpid(
+                    -1,
+                    &mut status,
+                    libc::WNOHANG | libc::WUNTRACED | libc::WCONTINUED,
+                );
+
+                if pid <= 0 {
+                    break;
+                }
+
+                if let Some((id, job)) = self.get_entry_by_pid(pid) {
+                    let mut notification: Option<String> = None;
+                    if libc::WIFEXITED(status) || libc::WIFSIGNALED(status) {
+                        job.remaining -= 1;
+                        if job.remaining == 0 {
+                            notification = Some(format!("[{}] Done      {}", id, job.command));
+                            self.remove(id);
+                        }
+                    } else if libc::WIFSTOPPED(status) {
+                        job.state = JobState::Stopped;
+                        notification = Some(format!("[{}] Stopped  {}", id, job.command));
+                    } else if libc::WIFCONTINUED(status) {
+                        job.state = JobState::Running;
+                        notification = Some(format!("[{}] Continued", id));
+                    }
+
+                    if notification.is_some() {
+                        terminal.notifications.push(notification.unwrap());
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    pub fn get_bg_job_stdout(&mut self) -> Result<Vec<String>> {
+        let mut stdout = Vec::new();
+        let mut buf = [0u8; 4096];
+
+        for job in self.table.values() {
+            if let Some(fd) = job.stdout_fd {
+                unsafe {
+                    // Set non-blocking
+                    let flags = libc::fcntl(fd, libc::F_GETFL);
+                    libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK);
+
+                    loop {
+                        let n = libc::read(fd, buf.as_mut_ptr() as *mut libc::c_void, buf.len());
+
+                        if n < 0 {
+                            let err = std::io::Error::last_os_error();
+                            // Break only if it's truly non-blocking, otherwise handle error
+                            if err.kind() == std::io::ErrorKind::WouldBlock {
+                                break;
+                            }
+                            return Err(err.into());
+                        } else if n == 0 {
+                            break; // EOF1
+                        }
+
+                        let output = String::from_utf8_lossy(&buf[..n as usize]).into_owned();
+                        stdout.push(output);
+                    }
+                }
+            }
+        }
+
+        Ok(stdout)
+    }
+
+    pub fn wait_foreground(
+        &mut self,
+        shell_gpid: libc::pid_t,
+        terminal: &mut Terminal,
+        pgid: libc::pid_t,
+        command: Command,
+        pids: &[libc::pid_t],
+        is_new_job: bool,
+    ) -> Result<i32> {
+        let mut exit_code = 0;
+        let mut stopped = false;
+        loop {
+            let mut status: libc::c_int = 0;
+
+            // We use -pgid because as we can read in the docs:
+            // "If pid is less than (pid_t)-1, status is requested for any
+            // child process whose process group ID is equal to the absolute
+            // value of pid."
+            let pid = unsafe { libc::waitpid(-pgid, &mut status, libc::WUNTRACED) };
+
+            if pid <= 0 {
+                break;
+            }
+
+            if libc::WIFEXITED(status) {
+                exit_code = libc::WEXITSTATUS(status);
+            } else if libc::WIFSIGNALED(status) {
+                exit_code = 1;
+            } else if libc::WIFSTOPPED(status) {
+                stopped = true;
+            }
+        }
+
+        if stopped {
+            let id;
+
+            if is_new_job {
+                let job = Job::new(pgid, pids.to_vec(), command, JobState::Stopped, None);
+                id = self.add(job);
+            } else {
+                let (job_id, job) = self.get_entry(pgid).unwrap();
+                job.state = JobState::Stopped;
+                id = job_id;
+            }
+
+            terminal.println(&format!("\r\n[{}] Stopped {}", id, pgid))?;
+            exit_code = 148;
+        } else if !is_new_job {
+            if let Some((id, _)) = self.get_entry(pgid) {
+                self.remove(id);
+            }
+        }
+
+        unsafe { libc::tcsetpgrp(libc::STDIN_FILENO, shell_gpid) };
+
+        Ok(exit_code)
+    }
+}
+//main.rs
+
+mod builtins;
+mod context;
+mod editor;
+mod error;
+mod executor;
+mod expander;
+mod jobs;
+mod parser;
+mod prompt;
+mod shell;
+mod signals;
+mod terminal;
+mod tokenizer;
+
+use shell::Shell;
+
+fn main() {
+    if let Err(e) = Shell::new().run() {
+        eprintln!("Critical Shell Error: {:?}", e);
+        std::process::exit(1);
+    }
+}
+//parser.rs
+
+use crate::error::{ShellError, ShellPhase};
+use crate::tokenizer::Token;
+use anyhow::Result;
+use std::fmt::{self};
+use std::iter::Peekable;
+
+#[derive(Clone, Debug)]
+pub enum RedirectTarget {
+    File(String),
+    FileDescriptor(u8),
+}
+
+impl fmt::Display for RedirectTarget {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            RedirectTarget::File(path) => write!(f, "{}", path),
+            RedirectTarget::FileDescriptor(fd) => write!(f, "&{}", fd),
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub enum RedirectKind {
+    Out,       // >
+    Append,    // >>
+    In,        // <
+    Err,       // 2>
+    ErrAndOut, // 2>&1
+}
+
+impl fmt::Display for RedirectKind {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            RedirectKind::Out => write!(f, ">"),
+            RedirectKind::Append => write!(f, ">>"),
+            RedirectKind::In => write!(f, "<"),
+            RedirectKind::Err => write!(f, "2>"),
+            RedirectKind::ErrAndOut => write!(f, "2>&1"),
+        }
+    }
+}
+
+impl RedirectKind {
+    pub fn from_token(token: &Token) -> Option<Self> {
+        match token {
+            Token::RedirectOut => Some(RedirectKind::Out),
+            Token::RedirectAppend => Some(RedirectKind::Append),
+            Token::RedirectIn => Some(RedirectKind::In),
+            Token::RedirectErr => Some(RedirectKind::Err),
+            Token::RedirectErrAndOut => Some(RedirectKind::ErrAndOut),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct Redirect {
+    pub kind: RedirectKind,
+    pub target: RedirectTarget,
+}
+
+impl Redirect {
+    pub fn get_target_path(&self) -> Option<&String> {
+        match &self.target {
+            RedirectTarget::File(path) => Some(path),
+            _ => None,
+        }
+    }
+}
+
+impl fmt::Display for Redirect {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self.kind {
+            // ErrAndOut usually doesn't have a target in common shell syntax
+            // (e.g., "2>&1" is self-contained)
+            RedirectKind::ErrAndOut => write!(f, "2>&1"),
+            _ => write!(f, "{}{}", self.kind, self.target),
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub enum Arg {
+    Word(String),
+    SingleQuoted(String),
+    DoubleQuoted(String)
+}
+
+impl fmt::Display for Arg {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Arg::Word(s) | Arg::SingleQuoted(s) | Arg::DoubleQuoted(s) => write!(f, "{}", s)
+        }
+    }
+}
+
+impl TryFrom<&Token> for Arg {
+    type Error = anyhow::Error; // Specify that we are using anyhow's error
+
+    fn try_from(value: &Token) -> Result<Self> {
+        match value {
+            Token::Word(s) => Ok(Self::Word(s.clone())),
+            Token::SingleQuoted(s) => Ok(Self::SingleQuoted(s.clone())),
+            Token::DoubleQuoted(s) => Ok(Self::DoubleQuoted(s.clone())),
+            _ => Parser::error("Failed to cast token to to argument, the only value accepted are 'Word', 'SingleQuoted', 'DoubleQuoted'"),
+        }
+    }
+}
+
+impl Into<String> for Arg {
+    fn into(self) -> String {
+        match self {
+            Arg::Word(s) | Arg::SingleQuoted(s) | Arg::DoubleQuoted(s) => s
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub enum Command {
+    Simple {
+        command: String,
+        args: Vec<Arg>,
+        redirects: Vec<Redirect>,
+    },
+    Pipeline(Box<Command>, Box<Command>),
+    And(Box<Command>, Box<Command>),
+    Or(Box<Command>, Box<Command>),
+    Sequence(Box<Command>, Box<Command>),
+    Background(Box<Command>),
+}
+
+impl fmt::Display for Command {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Command::Simple { command, args, redirects } => {
+                write!(f, "{}", command)?;
+                if !args.is_empty() {
+                    let str_args: Vec<String> = args.iter().map(|a| a.to_string()).collect();
+                    write!(f, " {}", str_args.join(" "))?;
+                }
+                for redirect in redirects {
+                    write!(f, " {}", redirect)?;
+                }
+                Ok(())
+            }
+            Command::Pipeline(left, right) => write!(f, "{} | {}", left, right),
+            Command::And(left, right) => write!(f, "{} && {}", left, right),
+            Command::Or(left, right) => write!(f, "{} || {}", left, right),
+            Command::Sequence(left, right) => write!(f, "{}; {}", left, right),
+            Command::Background(cmd) => write!(f, "{} &", cmd),
+        }
+    }
+}
+
+pub struct Parser<'a> {
+    tokens: Peekable<std::slice::Iter<'a, Token>>,
+}
+
+impl<'a> Parser<'a> {
+    pub fn parse(tokens: &'a [Token]) -> Result<Command> {
+        Self {
+            tokens: tokens.iter().peekable(),
+        }
+        .run()
+    }
+
+    pub fn run(&mut self) -> Result<Command> {
+        if self.tokens.peek().is_some() {
+            self.parse_sequence()
+        } else {
+            Parser::error("Empty input: no tokens found to parse")
+        }
+    }
+
+    fn parse_sequence(&mut self) -> Result<Command> {
+        let mut left = self.parse_and_or()?;
+
+        while let Some(token) = self.tokens.peek() {
+            if matches!(token, Token::Semicolon | Token::Newline) {
+                self.tokens.next();
+
+                if self.tokens.peek().is_none() {
+                    break;
+                }
+
+                let right = self.parse_and_or()?;
+                left = Command::Sequence(Box::new(left), Box::new(right));
+            } else {
+                break;
+            }
+        }
+
+        Ok(left)
+    }
+
+    fn parse_and_or(&mut self) -> Result<Command> {
+        let mut left = self.parse_pipeline()?;
+        while let Some(token) = self.tokens.peek() {
+            if matches!(token, Token::And | Token::Or) {
+                let operator = self.tokens.next().unwrap();
+                let right = self.parse_pipeline()?;
+
+                if matches!(operator, Token::And) {
+                    left = Command::And(Box::new(left), Box::new(right));
+                } else {
+                    left = Command::Or(Box::new(left), Box::new(right));
+                }
+            } else {
+                break;
+            }
+        }
+
+        Ok(left)
+    }
+
+    fn parse_pipeline(&mut self) -> Result<Command> {
+        let mut left = self.parse_command()?;
+        while let Some(token) = self.tokens.peek() {
+            if matches!(token, Token::Pipe) {
+                self.tokens.next();
+                let right = self.parse_command()?;
+                left = Command::Pipeline(Box::new(left), Box::new(right))
+            } else {
+                break;
+            }
+        }
+
+        if matches!(self.tokens.peek(), Some(Token::Background)) {
+            self.tokens.next();
+            return Ok(Command::Background(Box::new(left)));
+        }
+
+        Ok(left)
+    }
+
+    fn parse_command(&mut self) -> Result<Command> {
+        use Token::*;
+
+        let command = match self.tokens.next() {
+            Some(Word(command_name)) => command_name.clone(),
+            Some(_) => {
+                return Parser::error("Syntax error: expected a command name at the start of the expression");
+            }
+            None => return Parser::error("Unexpected end of input: expected a command"),
+        };
+
+        let mut args = Vec::new();
+        let mut redirects = Vec::new();
+
+        while let Some(token) = self.tokens.peek() {
+            if token.is_operator() {
+                break;
+            }
+
+            match token {
+                Token::Word(_) | Token::SingleQuoted(_) | Token::DoubleQuoted(_) => {
+                    let arg = self.tokens.next().unwrap().try_into()?;
+                    args.push(arg);
+                }
+                RedirectIn | RedirectOut | RedirectAppend | RedirectErr | RedirectErrAndOut => {
+                    redirects.push(self.parse_redirect()?);
+                }
+                _ => break,
+            }
+        }
+
+        Ok(Command::Simple {
+            command,
+            args,
+            redirects,
+        })
+    }
+
+    fn parse_redirect(&mut self) -> Result<Redirect> {
+        let kind_token = self.tokens.next().unwrap();
+
+        if matches!(kind_token, Token::RedirectErrAndOut) {
+            return Ok(Redirect {
+                kind: RedirectKind::ErrAndOut,
+                target: RedirectTarget::FileDescriptor(1),
+            });
+        }
+
+        match self.tokens.next() {
+            Some(Token::Word(file)) => Ok(Redirect {
+                kind: RedirectKind::from_token(kind_token).unwrap(),
+                target: RedirectTarget::File(file.clone()),
+            }),
+            Some(_) => Parser::error("Redirection error: expected a file path, but found an operator or special token"),
+            None => Parser::error("Redirection error: expected a file path after the redirect operator, but reached end of input"),
+        }
+    }
+
+    fn error<T>(message: &str) -> Result<T> {
+        Err(anyhow::Error::new(ShellError {
+            phase: ShellPhase::Parser,
+            command: None,
+            message: message.into(),
+        }))
+    }
+}
+
+// #[cfg(test)]
+// mod tests {
+//     use super::*;
+//     use crate::tokenizer::Tokenizer;
+
+//     fn parse(input: &str) -> Command {
+//         let tokens = Tokenizer::tokenize(input).unwrap();
+//         Parser::parse(&tokens).unwrap()
+//     }
+
+//     #[test]
+//     fn test_simple_command() {
+//         let cmd = parse("echo hello world");
+//         assert!(matches!(cmd, Command::Simple { command, args, .. }
+//             if command == "echo" && args == vec!["hello", "world"]));
+//     }
+
+//     #[test]
+//     fn test_single_quoted_arg() {
+//         let cmd = parse("echo 'hello world'");
+//         assert!(matches!(cmd, Command::Simple { args, .. }
+//             if args == vec!["hello world"]));
+//     }
+
+//     #[test]
+//     fn test_pipeline() {
+//         let cmd = parse("ls | grep foo");
+//         assert!(matches!(cmd, Command::Pipeline(_, _)));
+//     }
+
+//     #[test]
+//     fn test_and() {
+//         let cmd = parse("make && make install");
+//         assert!(matches!(cmd, Command::And(_, _)));
+//     }
+
+//     #[test]
+//     fn test_or() {
+//         let cmd = parse("cd foo || echo nope");
+//         assert!(matches!(cmd, Command::Or(_, _)));
+//     }
+
+//     #[test]
+//     fn test_sequence() {
+//         let cmd = parse("echo hello; echo world");
+//         assert!(matches!(cmd, Command::Sequence(_, _)));
+//     }
+
+//     #[test]
+//     fn test_background() {
+//         let cmd = parse("sleep 10 &");
+//         assert!(matches!(cmd, Command::Background(_)));
+//     }
+
+//     #[test]
+//     fn test_redirect_out() {
+//         let cmd = parse("echo foo > out.txt");
+//         assert!(matches!(cmd, Command::Simple { redirects, .. }
+//             if matches!(redirects[0].kind, RedirectKind::Out)));
+//     }
+
+//     #[test]
+//     fn test_redirect_in() {
+//         let cmd = parse("grep foo < in.txt");
+//         assert!(matches!(cmd, Command::Simple { redirects, .. }
+//             if matches!(redirects[0].kind, RedirectKind::In)));
+//     }
+
+//     #[test]
+//     fn test_multiple_redirects() {
+//         let cmd = parse("cmd < in.txt > out.txt 2> err.txt");
+//         assert!(matches!(cmd, Command::Simple { redirects, .. }
+//             if redirects.len() == 3));
+//     }
+
+//     #[test]
+//     fn test_trailing_semicolon() {
+//         let cmd = parse("echo hello;");
+//         assert!(matches!(cmd, Command::Simple { .. }));
+//     }
+
+//     #[test]
+//     fn test_pipeline_background() {
+//         let cmd = parse("ls | grep foo &");
+//         assert!(matches!(cmd, Command::Background(_)));
+//     }
+
+//     #[test]
+//     fn test_precedence() {
+//         // Should parse as: b && (c | d), wrapped in sequence with a
+//         let cmd = parse("a ; b && c | d");
+//         assert!(matches!(cmd, Command::Sequence(_, right)
+//             if matches!(*right, Command::And(_, _))));
+//     }
+
+//     #[test]
+//     fn test_empty_input() {
+//         assert!(Parser::parse(&[]).is_err());
+//     }
+// }
+//prompt.rs
+
+use std::path::PathBuf;
+
+pub struct Prompt {
+    pub message: String,
+}
+
+//TODO: For now we do a static prompt, after i finished everything i will add the ability to customize it
+impl Prompt {
+    pub fn new() -> Self {
+        Self {
+            message: String::new(),
+        }
+    }
+
+    pub fn update(&mut self, directory: &PathBuf) {
+        self.message = format!("{} >> ", directory.display());
+    }
+
+    pub fn len(&self) -> usize {
+        self.message.len()
+    }
+}
+//shell.rs
+
+use crate::{
+    context::Context,
+    editor::Editor,
+    error::ShellError,
+    executor, expander,
+    parser::{Command, Parser},
+    prompt::Prompt,
+    terminal::Terminal,
+    tokenizer::Tokenizer,
+};
+use anyhow::Result;
+
+pub struct Shell {
+    terminal: Terminal,
+    context: Context,
+}
+
+impl Shell {
+    pub fn new() -> Self {
+        Self {
+            terminal: Terminal::new(),
+            context: Context::new(),
+        }
+    }
+
+    pub fn run(&mut self) -> Result<()> {
+        let mut prompt = Prompt::new();
+        let mut editor = Editor::new();
+
+        self.terminal.clear_screen()?;
+        self.terminal.enter_raw_mode()?;
+
+        loop {
+            if self.context.signals.child_finished() {
+                self.context.jobs.update_table(&mut self.terminal)?;
+            }
+
+            self.update_prompt(&mut editor, &mut prompt)?;
+
+            let command = self.parse_command(&mut editor, &mut prompt)?;
+            if let Some(command) = command {
+                if !self.execute_command(command)? {
+                    break;
+                }
+            }
+        }
+
+        self.terminal.exit_raw_mode()?;
+
+        Ok(())
+    }
+
+    fn update_prompt(&mut self, editor: &mut Editor, prompt: &mut Prompt) -> Result<()> {
+        prompt.update(self.context.update_cwd());
+
+        if let Err(e) = editor.set_prompt(&mut self.terminal) {
+            self.terminal.println(&format!("Terminal Error: {:?}", e))?;
+        }
+
+        Ok(())
+    }
+
+    fn parse_command(
+        &mut self,
+        editor: &mut Editor,
+        prompt: &mut Prompt,
+    ) -> Result<Option<Command>> {
+        let line = editor.read_line(&mut self.context, &mut self.terminal, prompt)?;
+        if line.is_empty() {
+            return Ok(None);
+        }
+
+        let tokens = Tokenizer::tokenize(&line)?;
+        let raw_command = Parser::parse(&tokens)?;
+
+        Ok(Some(expander::expand(&mut self.context, raw_command)?))
+    }
+
+    fn execute_command(&mut self, command: Command) -> Result<bool> {
+        self.terminal.exit_raw_mode()?;
+
+        let result = executor::execute(&mut self.context, command, &mut self.terminal);
+
+        self.terminal.enter_raw_mode()?;
+
+        if let Err(e) = result {
+            if let Some(shell_err) = e.downcast_ref::<ShellError>() {
+                if shell_err.is_exit() {
+                    return Ok(false);
+                }
+            }
+            self.terminal.println(&format!("{:?}", e))?;
+        } else {
+            self.context.last_exit_code = result.unwrap();
+        }
+
+        Ok(true)
+    }
+}
+//signals.rs
+
+use std::os::unix::io::RawFd;
+use std::sync::atomic::{AtomicI32, Ordering};
+
+static PIPE_WRITE_END: AtomicI32 = AtomicI32::new(-1);
+
+extern "C" fn sigchld_handler(_: libc::c_int) {
+    let fd = PIPE_WRITE_END.load(Ordering::Relaxed);
+    if fd != -1 {
+        let byte = &1u8 as *const u8 as *const libc::c_void;
+        unsafe {
+            libc::write(fd, byte, 1);
+        }
+    }
+}
+
+pub struct SignalHandler {
+    pub sigchld_fd: RawFd,
+}
+
+impl Drop for SignalHandler {
+    fn drop(&mut self) {
+        unsafe {
+            let write_fd = PIPE_WRITE_END.load(Ordering::Relaxed);
+            libc::close(self.sigchld_fd);
+            libc::close(write_fd);
+        }
+    }
+}
+
+impl SignalHandler {
+    pub fn new() -> Self {
+        Self::ignore();
+        let sigchld_fd = Self::setup_self_pipe_trick();
+        Self { sigchld_fd }
+    }
+
+    pub fn child_finished(&self) -> bool {
+        let mut buffer = [0u8; 64];
+        let childs = unsafe {
+            libc::read(
+                self.sigchld_fd,
+                buffer.as_mut_ptr() as *mut libc::c_void,
+                64,
+            )
+        };
+        childs > 0
+    }
+
+    pub fn ignore() {
+        unsafe {
+            // Make it ignore SIGTTOU, SIGTTIN, SIGTSTP so it properly
+            // access terminal even where there are background tasks
+            libc::signal(libc::SIGTTOU, libc::SIG_IGN);
+            libc::signal(libc::SIGTSTP, libc::SIG_IGN);
+            libc::signal(libc::SIGTTIN, libc::SIG_IGN);
+
+            // Also ignore SIGINT, SIGQUIT so CTRL + C doesn't kill the shell
+            libc::signal(libc::SIGINT, libc::SIG_IGN);
+            libc::signal(libc::SIGQUIT, libc::SIG_IGN);
+        }
+    }
+
+    pub fn reset(&self) {
+        unsafe {
+            libc::signal(libc::SIGINT, libc::SIG_DFL);
+            libc::signal(libc::SIGTSTP, libc::SIG_DFL);
+            libc::signal(libc::SIGTTOU, libc::SIG_DFL);
+            libc::signal(libc::SIGTTIN, libc::SIG_DFL);
+        }
+    }
+
+    fn setup_self_pipe_trick() -> RawFd {
+        unsafe {
+            // Create the pipe
+            let mut fds = [0i32; 2];
+            libc::pipe(fds.as_mut_ptr());
+
+            let [read_end, write_end] = fds;
+
+            // Set the pipe write end to be non blocking
+            libc::fcntl(read_end, libc::F_SETFL, libc::O_NONBLOCK);
+
+            // Store the value in the static variable to be passed down to the
+            // signal handler C function callback
+            PIPE_WRITE_END.store(write_end, Ordering::Relaxed);
+
+            // Setup the signal action with the sigchld hanlder we created
+            let mut signal_action: libc::sigaction = std::mem::zeroed();
+
+            // We create a pointer to the function and we cast it to the sighandler_t type
+            signal_action.sa_sigaction = sigchld_handler as *const () as libc::sighandler_t;
+
+            // Setup the signal mask (the behavior basically)
+            // SA_RESTART: makes system calls interrupted by signals automatically restart.
+            // SA_NOCLD_STOP: stops SIGCHLD from arriving when child processes stop. You only get it when they terminate.
+            libc::sigemptyset(&mut signal_action.sa_mask);
+            signal_action.sa_flags = libc::SA_RESTART | libc::SA_NOCLDSTOP;
+
+            // Create the signal handler itself with everything we did before
+            libc::sigaction(libc::SIGCHLD, &signal_action, std::ptr::null_mut());
+
+            read_end
+        }
+    }
+}
+//terminal.rs
+
+use anyhow::{Context, Result};
+use crossterm::{
+    cursor::{MoveDown, MoveLeft, MoveRight, MoveTo, MoveUp},
+    execute,
+    terminal::{Clear, ClearType},
+};
+use std::{io::{Stdout, Write, stdout}, os::fd::AsRawFd};
+
+pub struct Terminal {
+    pub stdout: Stdout,
+    pub notifications: Vec<String>,
+    is_raw: bool,
+
+}
+
+impl Terminal {
+    pub fn new() -> Self {
+        Self {
+            stdout: stdout(),
+            is_raw: false,
+            notifications: Vec::new(),
+        }
+    }
+
+    /// Enter raw mode explicitly
+    pub fn enter_raw_mode(&mut self) -> Result<()> {
+            if !self.is_raw {
+                crossterm::terminal::enable_raw_mode()
+                    .context("Failed to enable terminal raw mode")?;
+
+                let fd = self.stdout.as_raw_fd();
+                unsafe {
+                    let mut termios = std::mem::zeroed();
+                    libc::tcgetattr(fd, &mut termios);
+
+                    // Keep output processing (OPOST) and force NL to CR-NL (ONLCR)
+                    termios.c_oflag |= libc::OPOST | libc::ONLCR;
+
+                    libc::tcsetattr(fd, libc::TCSANOW, &termios);
+                }
+
+                self.is_raw = true;
+            }
+            Ok(())
+        }
+
+    /// Exit raw mode explicitly
+    pub fn exit_raw_mode(&mut self) -> Result<()> {
+        if self.is_raw {
+            crossterm::terminal::disable_raw_mode()
+                .context("Failed to disable terminal raw mode")?;
+            self.is_raw = false;
+        }
+        Ok(())
+    }
+
+    /// Prints to the screen any output
+    pub fn print(&mut self, output: &str) -> Result<()> {
+        write!(self.stdout, "{}", output)
+            .with_context(|| format!("Failed to write output to terminal: {}", output))?;
+        self.stdout
+            .flush()
+            .context("Failed to flush terminal stdout")?;
+        Ok(())
+    }
+
+    /// Prints to the screen any output with and goes to a new line
+    pub fn println(&mut self, output: &str) -> Result<()> {
+        // In raw mode, \r\n is essential for proper carriage return and newline
+        write!(self.stdout, "{}\r\n", output)
+            .with_context(|| format!("Failed to write line to terminal: {}", output))?;
+        self.stdout
+            .flush()
+            .context("Failed to flush terminal stdout")?;
+        Ok(())
+    }
+
+    /// Moves to the cursor at the specified column and row
+    pub fn move_to(&mut self, column: u16, row: u16) -> Result<()> {
+        execute!(self.stdout, MoveTo(column, row))
+            .with_context(|| format!("Failed to move cursor to ({}, {})", column, row))?;
+        Ok(())
+    }
+
+    /// Moves the cursor up
+    pub fn move_up(&mut self) -> Result<()> {
+        execute!(self.stdout, MoveUp(1)).context("Failed to move cursor up")?;
+        Ok(())
+    }
+
+    /// Moves the cursor down
+    pub fn move_down(&mut self) -> Result<()> {
+        execute!(self.stdout, MoveDown(1)).context("Failed to move cursor down")?;
+        Ok(())
+    }
+
+    /// Moves the cursor right
+    pub fn move_right(&mut self) -> Result<()> {
+        execute!(self.stdout, MoveRight(1)).context("Failed to move cursor right")?;
+        Ok(())
+    }
+
+    /// Moves the cursor left
+    pub fn move_left(&mut self) -> Result<()> {
+        execute!(self.stdout, MoveLeft(1)).context("Failed to move cursor left")?;
+        Ok(())
+    }
+
+    /// Clears the entire terminal screen
+    pub fn clear_screen(&mut self) -> Result<()> {
+        execute!(self.stdout, Clear(ClearType::All), MoveTo(0, 0))
+            .context("Failed to clear screen and reset cursor position")?;
+        Ok(())
+    }
+
+    /// Clear the entire line at y height
+    pub fn clear_line(&mut self, y: u16) -> Result<()> {
+        execute!(self.stdout, MoveTo(0, y), Clear(ClearType::CurrentLine))
+            .with_context(|| format!("Failed to clear terminal line at height {}", y))?;
+        Ok(())
+    }
+
+    /// Retrieves the cursor position
+    pub fn cursor_pos(&mut self) -> Result<(u16, u16)> {
+        crossterm::cursor::position().context("Failed to retrieve cursor position")
+    }
+}
+
+/// Important: Drop ensures the user isn't stuck in raw mode if the shell crashes.
+impl Drop for Terminal {
+    fn drop(&mut self) {
+        // We ignore the error in drop because we can't do much with it here
+        let _ = self.exit_raw_mode();
+    }
+}
+// tokenizer.rs
+
+use crate::error::{ShellError, ShellPhase};
+use anyhow::Result;
+use std::{iter::Peekable, str::Chars};
+
+pub enum Token {
+    // Words
+    Word(String),
+    SingleQuoted(String),
+    DoubleQuoted(String),
+
+    // Command separation
+    Pipe,      // |
+    Semicolon, // ;
+    Newline,
+    And,        // &&
+    Or,         // ||
+    Background, // &
+
+    // Redirection
+    RedirectOut,       // >
+    RedirectAppend,    // >>
+    RedirectIn,        // <
+    RedirectErr,       // 2>
+    RedirectErrAndOut, // 2>&1
+}
+
+impl Token {
+    pub fn is_operator(&self) -> bool {
+        use Token::*;
+        matches!(self, Pipe | Semicolon | Newline | And | Or | Background)
+    }
+}
+
+pub struct Tokenizer<'a> {
+    line: Peekable<Chars<'a>>,
+}
+
+impl<'a> Tokenizer<'a> {
+    pub fn tokenize(line: &'a str) -> Result<Vec<Token>> {
+        Self {
+            line: line.chars().peekable(),
+        }
+        .run()
+    }
+
+    pub fn run(&mut self) -> Result<Vec<Token>> {
+        let mut tokens = Vec::new();
+        while let Some(&current) = self.line.peek() {
+            if current.is_whitespace() {
+                self.line.next();
+                continue;
+            }
+
+            let token = if current == '\'' || current == '"' {
+                self.parse_string()?
+            } else if self.starts_operator(current) {
+                self.parse_operators()?
+            } else {
+                self.parse_word()?
+            };
+            tokens.push(token);
+        }
+
+        Ok(tokens)
+    }
+
+    fn parse_word(&mut self) -> Result<Token> {
+        let mut word = String::from(self.line.next().unwrap());
+        while let Some(character) = self.line.peek() {
+            if !character.is_whitespace() && !Self::is_operator(*character) {
+                word.push(self.line.next().unwrap());
+            } else {
+                break;
+            }
+        }
+
+        Ok(Token::Word(word))
+    }
+
+    fn parse_string(&mut self) -> Result<Token> {
+        let quote = self.line.next().unwrap();
+        let mut string = String::new();
+        while let Some(character) = self.line.next() {
+            if character == quote {
+                return Ok(if quote == '\'' {
+                    Token::SingleQuoted(string)
+                } else {
+                    Token::DoubleQuoted(string)
+                });
+            }
+            string.push(character);
+        }
+        self.error(&format!("Found unclosed string starting with ({})", quote))
+    }
+
+    fn parse_operators(&mut self) -> Result<Token> {
+        match self.line.next().unwrap() {
+            '|' => {
+                if self.match_next('|') {
+                    Ok(Token::Or)
+                } else {
+                    Ok(Token::Pipe)
+                }
+            }
+            ';' => Ok(Token::Semicolon),
+            '\n' => Ok(Token::Newline),
+            '&' => {
+                if self.match_next('&') {
+                    Ok(Token::And)
+                } else {
+                    Ok(Token::Background)
+                }
+            }
+            '>' => {
+                if self.match_next('>') {
+                    Ok(Token::RedirectAppend)
+                } else {
+                    Ok(Token::RedirectOut)
+                }
+            }
+            '<' => Ok(Token::RedirectIn),
+            '2' => {
+                if self.match_next('>') {
+                    if self.match_next('&') {
+                        if self.match_next('1') {
+                            Ok(Token::RedirectErrAndOut)
+                        } else {
+                            self.error("Invalid redirection sequence: expected '1' after '2>&'")
+                        }
+                    } else {
+                        Ok(Token::RedirectErr)
+                    }
+                } else {
+                    Ok(Token::Word("2".to_string()))
+                }
+            }
+
+            other => self.error(&format!("Unexpected character encountered: '{}'", other)),
+        }
+    }
+
+    fn is_operator(character: char) -> bool {
+        matches!(character, '|' | ';' | '&' | '>' | '<' | '\n')
+    }
+
+    fn starts_operator(&mut self, ch: char) -> bool {
+        if Self::is_operator(ch) {
+            return true;
+        }
+        if ch == '2' && self.line.peek() == Some(&'>') {
+            return true;
+        }
+        false
+    }
+
+    fn match_next(&mut self, expected: char) -> bool {
+        if self.line.peek() == Some(&expected) {
+            self.line.next();
+            true
+        } else {
+            false
+        }
+    }
+
+    fn error<T>(&self, message: &str) -> Result<T> {
+        Err(anyhow::Error::new(ShellError {
+            phase: ShellPhase::Tokenizer,
+            command: None,
+            message: message.into(),
+        }))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn tokenize(input: &str) -> Vec<Token> {
+        Tokenizer::tokenize(input).unwrap()
+    }
+
+    #[test]
+    fn test_simple_command() {
+        let tokens = tokenize("echo hello");
+        assert!(matches!(&tokens[0], Token::Word(w) if w == "echo"));
+        assert!(matches!(&tokens[1], Token::Word(w) if w == "hello"));
+    }
+
+    #[test]
+    fn test_single_quoted() {
+        let tokens = tokenize("echo 'hello world'");
+        assert!(matches!(&tokens[1], Token::SingleQuoted(s) if s == "hello world"));
+    }
+
+    #[test]
+    fn test_double_quoted() {
+        let tokens = tokenize("echo \"hello world\"");
+        assert!(matches!(&tokens[1], Token::DoubleQuoted(s) if s == "hello world"));
+    }
+
+    #[test]
+    fn test_pipe() {
+        let tokens = tokenize("ls | grep foo");
+        assert!(matches!(&tokens[1], Token::Pipe));
+    }
+
+    #[test]
+    fn test_and_or() {
+        let tokens = tokenize("foo && bar || baz");
+        assert!(matches!(&tokens[1], Token::And));
+        assert!(matches!(&tokens[3], Token::Or));
+    }
+
+    #[test]
+    fn test_redirections() {
+        let tokens = tokenize("echo foo > out.txt");
+        assert!(matches!(&tokens[2], Token::RedirectOut));
+    }
+
+    #[test]
+    fn test_redirect_err() {
+        let tokens = tokenize("cmd 2> err.txt");
+        assert!(matches!(&tokens[1], Token::RedirectErr));
+    }
+
+    #[test]
+    fn test_redirect_err_and_out() {
+        let tokens = tokenize("cmd 2>&1");
+        assert!(matches!(&tokens[1], Token::RedirectErrAndOut));
+    }
+
+    #[test]
+    fn test_unclosed_string() {
+        assert!(Tokenizer::tokenize("echo \"unclosed").is_err());
+    }
+
+    #[test]
+    fn test_word_with_numbers() {
+        let tokens = tokenize("echo 123");
+        assert!(matches!(&tokens[1], Token::Word(w) if w == "123"));
+    }
+}
