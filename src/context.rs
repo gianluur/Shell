@@ -30,7 +30,10 @@ impl Context {
             last_exit_code: 0,
             last_job_pid: None,
         };
-        context.update_cwd();
+        let home_directory = context.update_cwd();
+        unsafe {
+            env::set_var("OLDPWD", home_directory);
+        }
 
         context
     }

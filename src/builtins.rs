@@ -33,14 +33,26 @@ impl BuiltIns {
 
     pub fn cd(args: &[String], _: &mut Context, _: &mut Terminal) -> Result<i32> {
         let target = if !args.is_empty() {
-            PathBuf::from(&args[0])
-        } else {
-            let home = env::var("HOME");
-            if home.is_err() {
-                return Self::error("cd", "HOME environment variable not set");
+            if &args[0] == "-" {
+                match env::var("OLDPWD") {
+                    Ok(old) => PathBuf::from(old),
+                    Err(_) => return Self::error("cd", "OLDPWD environment variable isn't set"),
+                }
+            } else {
+                PathBuf::from(&args[0])
             }
-            PathBuf::from(home.unwrap())
+        } else {
+            match env::var("HOME") {
+                Ok(home) => PathBuf::from(home),
+                Err(_) => return Self::error("cd", "HOME not set"),
+            }
         };
+
+        if let Ok(current) = env::current_dir() {
+            unsafe {
+                env::set_var("OLDPWD", current);
+            }
+        }
 
         env::set_current_dir(&target)
             .with_context(|| format!("cd: Failed to change directory to '{}'", target.display()))?;
