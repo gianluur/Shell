@@ -98,7 +98,7 @@ impl BuiltIns {
             job.state = JobState::Running;
 
             exit_code = context.jobs.wait_foreground(
-                context.gpid,
+                context.pgid,
                 terminal,
                 pgid,
                 command,

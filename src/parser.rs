@@ -85,13 +85,15 @@ impl fmt::Display for Redirect {
 pub enum Arg {
     Word(String),
     SingleQuoted(String),
-    DoubleQuoted(String)
+    DoubleQuoted(String),
 }
 
 impl fmt::Display for Arg {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Arg::Word(s) | Arg::SingleQuoted(s) | Arg::DoubleQuoted(s) => write!(f, "{}", s)
+            Arg::Word(s) => write!(f, "{}", s),
+            Arg::SingleQuoted(s) => write!(f, "'{}'", s),
+            Arg::DoubleQuoted(s) => write!(f, "\"{}\"", s),
         }
     }
 }
@@ -104,7 +106,9 @@ impl TryFrom<&Token> for Arg {
             Token::Word(s) => Ok(Self::Word(s.clone())),
             Token::SingleQuoted(s) => Ok(Self::SingleQuoted(s.clone())),
             Token::DoubleQuoted(s) => Ok(Self::DoubleQuoted(s.clone())),
-            _ => Parser::error("Failed to cast token to to argument, the only value accepted are 'Word', 'SingleQuoted', 'DoubleQuoted'"),
+            _ => Parser::error(
+                "Failed to cast token to to argument, the only value accepted are 'Word', 'SingleQuoted', 'DoubleQuoted'",
+            ),
         }
     }
 }
@@ -112,7 +116,7 @@ impl TryFrom<&Token> for Arg {
 impl Into<String> for Arg {
     fn into(self) -> String {
         match self {
-            Arg::Word(s) | Arg::SingleQuoted(s) | Arg::DoubleQuoted(s) => s
+            Arg::Word(s) | Arg::SingleQuoted(s) | Arg::DoubleQuoted(s) => s,
         }
     }
 }
@@ -134,7 +138,11 @@ pub enum Command {
 impl fmt::Display for Command {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Command::Simple { command, args, redirects } => {
+            Command::Simple {
+                command,
+                args,
+                redirects,
+            } => {
                 write!(f, "{}", command)?;
                 if !args.is_empty() {
                     let str_args: Vec<String> = args.iter().map(|a| a.to_string()).collect();
@@ -241,7 +249,9 @@ impl<'a> Parser<'a> {
         let command = match self.tokens.next() {
             Some(Word(command_name)) => command_name.clone(),
             Some(_) => {
-                return Parser::error("Syntax error: expected a command name at the start of the expression");
+                return Parser::error(
+                    "Syntax error: expected a command name at the start of the expression",
+                );
             }
             None => return Parser::error("Unexpected end of input: expected a command"),
         };
@@ -288,8 +298,12 @@ impl<'a> Parser<'a> {
                 kind: RedirectKind::from_token(kind_token).unwrap(),
                 target: RedirectTarget::File(file.clone()),
             }),
-            Some(_) => Parser::error("Redirection error: expected a file path, but found an operator or special token"),
-            None => Parser::error("Redirection error: expected a file path after the redirect operator, but reached end of input"),
+            Some(_) => Parser::error(
+                "Redirection error: expected a file path, but found an operator or special token",
+            ),
+            None => Parser::error(
+                "Redirection error: expected a file path after the redirect operator, but reached end of input",
+            ),
         }
     }
 

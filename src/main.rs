@@ -6,6 +6,7 @@ mod editor;
 mod error;
 mod executor;
 mod expander;
+mod history;
 mod jobs;
 mod parser;
 mod prompt;
@@ -17,7 +18,15 @@ mod tokenizer;
 use shell::Shell;
 
 fn main() {
-    if let Err(e) = Shell::new().run() {
+    let mut shell = match Shell::new() {
+        Ok(shell) => shell,
+        Err(error) => {
+            eprintln!("Failed to start up RShell: {:?}", error);
+            std::process::exit(1)
+        }
+    };
+
+    if let Err(e) = shell.run() {
         eprintln!("Critical Shell Error: {:?}", e);
         std::process::exit(1);
     }

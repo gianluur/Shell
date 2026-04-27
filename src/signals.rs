@@ -36,7 +36,7 @@ impl SignalHandler {
         Self { sigchld_fd }
     }
 
-    pub fn child_finished(&self) -> bool {
+    pub fn drain_child_pipe(&self) -> bool {
         let mut buffer = [0u8; 64];
         let childs = unsafe {
             libc::read(

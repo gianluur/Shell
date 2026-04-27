@@ -122,7 +122,7 @@ fn expand_string(context: &mut Context, to_expand: String) -> Result<String> {
 
 fn error<T>(message: &str) -> Result<T> {
     Err(anyhow::Error::new(ShellError {
-        phase: ShellPhase::Expander, // Updated to Parser phase
+        phase: ShellPhase::Expander,
         command: None,
         message: message.into(),
     }))

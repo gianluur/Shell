@@ -102,8 +102,6 @@ impl Buffer {
 pub struct Editor {
     buffer: Buffer,
     row: u16,
-    history: Vec<String>,
-    history_row: usize,
 }
 
 impl Editor {
@@ -111,8 +109,6 @@ impl Editor {
         Self {
             buffer: Buffer::new(),
             row: 0,
-            history: Vec::new(),
-            history_row: 0,
         }
     }
 
@@ -132,7 +128,7 @@ impl Editor {
         self.redraw(context, terminal, prompt, false)?;
 
         loop {
-            if context.signals.child_finished() {
+            if context.signals.drain_child_pipe() {
                 self.redraw(context, terminal, prompt, true)?;
             }
 
@@ -168,7 +164,7 @@ impl Editor {
                                     self.buffer.insert(c);
                                     self.redraw(context, terminal, prompt, false)?;
                                 }
-                                KeyCode::Enter => return self.enter(terminal),
+                                KeyCode::Enter => return self.enter(context, terminal),
                                 KeyCode::Backspace => self.backspace(context, terminal, prompt)?,
                                 KeyCode::Up => self.up_arrow(context, terminal, prompt)?,
                                 KeyCode::Down => self.down_arrow(context, terminal, prompt)?,
@@ -229,13 +225,13 @@ impl Editor {
         self.redraw(context, terminal, prompt, false)
     }
 
-    fn enter(&mut self, terminal: &mut Terminal) -> Result<String> {
+    fn enter(&mut self, context: &mut Context, terminal: &mut Terminal) -> Result<String> {
         terminal.println("")?;
         let line = self.buffer.content();
-        if !line.is_empty() && self.history.last() != Some(&line) {
-            self.history.push(line);
+        if !line.is_empty() && context.history.current.last() != Some(&line) {
+            context.history.push(line)?;
         }
-        self.history_row = self.history.len();
+        context.history.row = context.history.current.len();
         Ok(self.buffer.take())
     }
 
@@ -257,9 +253,10 @@ impl Editor {
         terminal: &mut Terminal,
         prompt: &Prompt,
     ) -> Result<()> {
-        if self.history_row > 0 {
-            self.history_row -= 1;
-            self.buffer.set(&self.history[self.history_row]);
+        if context.history.row > 0 {
+            context.history.row -= 1;
+            self.buffer
+                .set(&context.history.current[context.history.row]);
             self.redraw(context, terminal, prompt, false)?;
         }
         Ok(())
@@ -271,12 +268,12 @@ impl Editor {
         terminal: &mut Terminal,
         prompt: &Prompt,
     ) -> Result<()> {
-        if self.history_row < self.history.len() {
-            self.history_row += 1;
-            let val = if self.history_row == self.history.len() {
+        if context.history.row < context.history.current.len() {
+            context.history.row += 1;
+            let val = if context.history.row == context.history.current.len() {
                 ""
             } else {
-                &self.history[self.history_row]
+                &context.history.current[context.history.row]
             };
             self.buffer.set(val);
             self.redraw(context, terminal, prompt, false)?;
@@ -337,7 +334,7 @@ impl Editor {
         terminal: &mut Terminal,
     ) -> Result<()> {
         terminal.println("")?;
-        context.signals.child_finished();
+        context.signals.drain_child_pipe();
 
         context.jobs.update_table(terminal)?;
 

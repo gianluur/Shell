@@ -18,11 +18,11 @@ pub struct Shell {
 }
 
 impl Shell {
-    pub fn new() -> Self {
-        Self {
+    pub fn new() -> Result<Shell> {
+        Ok(Self {
             terminal: Terminal::new(),
-            context: Context::new(),
-        }
+            context: Context::new()?,
+        })
     }
 
     pub fn run(&mut self) -> Result<()> {
@@ -33,7 +33,7 @@ impl Shell {
         self.terminal.enter_raw_mode()?;
 
         loop {
-            if self.context.signals.child_finished() {
+            if self.context.signals.drain_child_pipe() {
                 self.context.jobs.update_table(&mut self.terminal)?;
             }
 
@@ -85,15 +85,15 @@ impl Shell {
 
         self.terminal.enter_raw_mode()?;
 
-        if let Err(e) = result {
-            if let Some(shell_err) = e.downcast_ref::<ShellError>() {
+        if let Ok(exit_code) = result {
+            self.context.last_exit_code = exit_code;
+        } else if let Err(ref error) = result {
+            if let Some(shell_err) = error.downcast_ref::<ShellError>() {
                 if shell_err.is_exit() {
                     return Ok(false);
                 }
             }
-            self.terminal.println(&format!("{:?}", e))?;
-        } else {
-            self.context.last_exit_code = result.unwrap();
+            self.terminal.println(&format!("{:?}", error))?;
         }
 
         Ok(true)

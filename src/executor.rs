@@ -37,7 +37,7 @@ pub fn execute(context: &mut Context, command: Command, terminal: &mut Terminal)
 
             context
                 .jobs
-                .wait_foreground(context.gpid, terminal, pgid, command, &[pgid], true)
+                .wait_foreground(context.pgid, terminal, pgid, command, &[pgid], true)
         }
 
         Command::And(left, right) => {
@@ -147,7 +147,7 @@ pub fn execute(context: &mut Context, command: Command, terminal: &mut Terminal)
 
             context
                 .jobs
-                .wait_foreground(context.gpid, terminal, gpid, command, &pids, true)
+                .wait_foreground(context.pgid, terminal, gpid, command, &pids, true)
         }
     }
 }
@@ -352,7 +352,7 @@ fn set_stdio(redirects: Vec<Redirect>) -> Result<()> {
     Ok(())
 }
 
-fn to_cstring(raw_command: &str, raw_args: &Vec<String>) -> Result<(CString, Vec<CString>)> {
+fn to_cstring(raw_command: &str, raw_args: &[String]) -> Result<(CString, Vec<CString>)> {
     let command = CString::new(raw_command)
         .with_context(|| format!("Failed to convert command '{}' to CString", raw_command))?;
 
