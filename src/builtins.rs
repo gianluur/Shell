@@ -23,6 +23,7 @@ impl BuiltIns {
         programs.insert("jobs".to_string(), Self::jobs);
         programs.insert("fg".to_string(), Self::fg);
         programs.insert("bg".to_string(), Self::bg);
+        programs.insert("history".to_string(), Self::history);
 
         Self { programs }
     }
@@ -174,5 +175,12 @@ impl BuiltIns {
             command: Some(name.to_string()),
             message: message.into(),
         }))
+    }
+
+    pub fn history(_: &[String], context: &mut Context, terminal: &mut Terminal) -> Result<i32> {
+        for (n, line) in context.history.current.iter().enumerate() {
+            terminal.println(&format!("{} {}", n, line))?;
+        }
+        Ok(0)
     }
 }
