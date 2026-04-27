@@ -145,13 +145,7 @@ impl BuiltIns {
 
             job_id = job_id_str.parse::<usize>().unwrap();
         } else {
-            let possible_job_id = context
-                .jobs
-                .table
-                .iter()
-                .filter(|(_, job)| matches!(job.state, JobState::Stopped))
-                .map(|(&id, _)| id)
-                .max();
+            let possible_job_id = context.jobs.get_last_job_id();
 
             job_id = match possible_job_id {
                 Some(id) => id,

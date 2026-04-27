@@ -98,6 +98,8 @@ pub fn execute(context: &mut Context, command: Command, terminal: &mut Terminal)
                     JobState::Running,
                     Some(pipe_read),
                 ));
+                context.last_job_pid = Some(pid);
+
                 terminal.println(&format!("[{}] {}", job_id, pid))?;
 
                 Ok(0)
@@ -120,6 +122,8 @@ pub fn execute(context: &mut Context, command: Command, terminal: &mut Terminal)
                     JobState::Running,
                     Some(pipe_read),
                 ));
+
+                context.last_job_pid = Some(*pids.last().unwrap());
 
                 terminal.print(&format!("[{}] ", job_id))?;
                 for pid in pids {

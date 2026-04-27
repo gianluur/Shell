@@ -7,22 +7,28 @@ use std::{env, path::PathBuf};
 
 pub struct Context {
     directory: PathBuf,
+    pub name: String,
+    pub pid: libc::pid_t,
     pub gpid: libc::pid_t,
     pub builtins: BuiltIns,
     pub jobs: Jobs,
     pub signals: SignalHandler,
-    pub last_exit_code: i32
+    pub last_exit_code: i32,
+    pub last_job_pid: Option<libc::pid_t>,
 }
 
 impl Context {
     pub fn new() -> Self {
         let mut context = Context {
+            name: String::from("RShell"),
             directory: PathBuf::from("/"),
             gpid: Self::setup_pgid(),
+            pid: unsafe { libc::getpid() },
             jobs: Jobs::new(),
             builtins: BuiltIns::new(),
             signals: SignalHandler::new(),
-            last_exit_code: 0
+            last_exit_code: 0,
+            last_job_pid: None,
         };
         context.update_cwd();
 

@@ -248,4 +248,12 @@ impl Jobs {
 
         Ok(exit_code)
     }
+
+    pub fn get_last_job_id(&self) -> Option<usize> {
+        self.table
+            .iter()
+            .filter(|(_, job)| matches!(job.state, JobState::Stopped))
+            .map(|(&id, _)| id)
+            .max()
+    }
 }

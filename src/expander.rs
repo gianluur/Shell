@@ -96,12 +96,20 @@ fn expand_string(context: &mut Context, to_expand: String) -> Result<String> {
                 }
 
                 if !variable_name.is_empty() {
-                    if variable_name == "?" {
-                        expanded.push_str(&context.last_exit_code.to_string());
-                    } else {
-                        let expanded_variable = env::var(variable_name).unwrap_or_default();
-                        expanded.push_str(&expanded_variable);
-                    }
+                    match variable_name.as_str() {
+                        "$" => expanded.push_str(&context.pid.to_string()),
+                        "0" => expanded.push_str(&context.name.to_string()),
+                        "?" => expanded.push_str(&context.last_exit_code.to_string()),
+                        "!" => {
+                            if let Some(pid) = context.last_job_pid {
+                                expanded.push_str(&pid.to_string());
+                            }
+                        }
+                        _ => {
+                            let expanded_variable = env::var(variable_name).unwrap_or_default();
+                            expanded.push_str(&expanded_variable);
+                        }
+                    };
                 }
             }
 
