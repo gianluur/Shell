@@ -1,4 +1,4 @@
-# RShell –
+# RShell
 
 RShell is an interactive command-line shell for Unix-like operating systems, built from scratch in Rust. It supports job control, pipelines, redirections, expansions, built-in commands, and a raw‑mode line editor with history. The project demonstrates how low‑level system calls (fork, execvp, pipe, sigaction, tcsetpgrp, etc.) can be combined with safe Rust abstractions to create a fully functional shell.
 
