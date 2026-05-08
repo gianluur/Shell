@@ -1,12 +1,13 @@
 //expander.rs
 
-use crate::error::{ShellError, ShellPhase};
+use crate::{
+    context::Context,
+    error::{ShellError, ShellPhase},
+    parser::{Arg, Command, Redirect, RedirectTarget},
+};
 use anyhow::Result;
 use std::borrow::Cow;
 use std::env;
-
-use crate::context::Context;
-use crate::parser::{Arg, Command, Redirect, RedirectTarget};
 
 pub fn expand<'a>(context: &mut Context, command: Command<'a>) -> Result<Command<'static>> {
     match command {

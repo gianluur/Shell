@@ -1,7 +1,6 @@
 //context.rs
 
 use crate::{builtins::BuiltIns, history::History, jobs::Jobs, signals::SignalHandler};
-
 use anyhow::{Result, anyhow};
 use libc::{self};
 use std::{env, path::PathBuf};

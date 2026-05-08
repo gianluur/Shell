@@ -7,7 +7,6 @@ use crate::{
     parser::{Command, Redirect, RedirectKind},
     terminal::Terminal,
 };
-
 use anyhow::{Context as AnyhowContext, Ok, Result};
 use std::{ffi::CString, io, os::fd::RawFd};
 

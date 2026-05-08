@@ -1,9 +1,10 @@
-use anyhow::{Context, Ok, Result};
-use std::env;
-use std::fs::{self, File, OpenOptions};
-use std::io::Write;
-use std::path::PathBuf;
-
+use anyhow::{Context, Result};
+use std::{
+    env,
+    fs::{self, File, OpenOptions},
+    io::Write,
+    path::PathBuf,
+};
 pub struct History {
     file: File,
     pub row: usize,

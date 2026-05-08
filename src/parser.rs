@@ -3,9 +3,11 @@
 use crate::error::{ShellError, ShellPhase};
 use crate::tokenizer::Token;
 use anyhow::Result;
-use std::borrow::Cow;
-use std::fmt::{self};
-use std::iter::Peekable;
+use std::{
+    borrow::Cow,
+    fmt::{self},
+    iter::Peekable,
+};
 
 #[derive(Clone, Debug)]
 pub enum RedirectTarget<'a> {

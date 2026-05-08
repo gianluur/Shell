@@ -1,9 +1,8 @@
 //editor.rs
 
+use crate::{context::Context, prompt::Prompt, terminal::Terminal};
 use anyhow::{Context as AnyhowContext, Result};
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyModifiers};
-
-use crate::{context::Context, prompt::Prompt, terminal::Terminal};
 
 struct Buffer {
     data: String,

@@ -1,7 +1,9 @@
 //signals.rs
 
-use std::os::unix::io::RawFd;
-use std::sync::atomic::{AtomicI32, Ordering};
+use std::{
+    os::unix::io::RawFd,
+    sync::atomic::{AtomicI32, Ordering},
+};
 
 static PIPE_WRITE_END: AtomicI32 = AtomicI32::new(-1);
 
