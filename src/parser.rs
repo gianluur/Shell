@@ -3,16 +3,17 @@
 use crate::error::{ShellError, ShellPhase};
 use crate::tokenizer::Token;
 use anyhow::Result;
+use std::borrow::Cow;
 use std::fmt::{self};
 use std::iter::Peekable;
 
 #[derive(Clone, Debug)]
-pub enum RedirectTarget {
-    File(String),
+pub enum RedirectTarget<'a> {
+    File(Cow<'a, str>),
     FileDescriptor(u8),
 }
 
-impl fmt::Display for RedirectTarget {
+impl<'a> fmt::Display for RedirectTarget<'a> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             RedirectTarget::File(path) => write!(f, "{}", path),
@@ -56,21 +57,21 @@ impl RedirectKind {
 }
 
 #[derive(Clone, Debug)]
-pub struct Redirect {
+pub struct Redirect<'a> {
     pub kind: RedirectKind,
-    pub target: RedirectTarget,
+    pub target: RedirectTarget<'a>,
 }
 
-impl Redirect {
-    pub fn get_target_path(&self) -> Option<&String> {
+impl<'a> Redirect<'a> {
+    pub fn get_target_path(&self) -> Option<&str> {
         match &self.target {
-            RedirectTarget::File(path) => Some(path),
+            RedirectTarget::File(cow) => Some(cow.as_ref()),
             _ => None,
         }
     }
 }
 
-impl fmt::Display for Redirect {
+impl<'a> fmt::Display for Redirect<'a> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self.kind {
             // ErrAndOut usually doesn't have a target in common shell syntax
@@ -82,13 +83,21 @@ impl fmt::Display for Redirect {
 }
 
 #[derive(Clone, Debug)]
-pub enum Arg {
-    Word(String),
-    SingleQuoted(String),
-    DoubleQuoted(String),
+pub enum Arg<'a> {
+    Word(Cow<'a, str>),
+    SingleQuoted(Cow<'a, str>),
+    DoubleQuoted(Cow<'a, str>),
 }
 
-impl fmt::Display for Arg {
+impl<'a> Arg<'a> {
+    pub fn as_str(&self) -> &str {
+        match self {
+            Arg::Word(s) | Arg::SingleQuoted(s) | Arg::DoubleQuoted(s) => s.as_ref(),
+        }
+    }
+}
+
+impl<'a> fmt::Display for Arg<'a> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Arg::Word(s) => write!(f, "{}", s),
@@ -98,14 +107,14 @@ impl fmt::Display for Arg {
     }
 }
 
-impl TryFrom<&Token> for Arg {
+impl<'a> TryFrom<&'a Token<'a>> for Arg<'a> {
     type Error = anyhow::Error; // Specify that we are using anyhow's error
 
-    fn try_from(value: &Token) -> Result<Self> {
+    fn try_from(value: &'a Token) -> Result<Self> {
         match value {
-            Token::Word(s) => Ok(Self::Word(s.clone())),
-            Token::SingleQuoted(s) => Ok(Self::SingleQuoted(s.clone())),
-            Token::DoubleQuoted(s) => Ok(Self::DoubleQuoted(s.clone())),
+            Token::Word(s) => Ok(Self::Word(Cow::Borrowed(s))),
+            Token::SingleQuoted(s) => Ok(Self::SingleQuoted(Cow::Borrowed(s))),
+            Token::DoubleQuoted(s) => Ok(Self::DoubleQuoted(Cow::Borrowed(s))),
             _ => Parser::error(
                 "Failed to cast token to to argument, the only value accepted are 'Word', 'SingleQuoted', 'DoubleQuoted'",
             ),
@@ -113,68 +122,80 @@ impl TryFrom<&Token> for Arg {
     }
 }
 
-impl Into<String> for Arg {
+impl<'a> Into<String> for Arg<'a> {
     fn into(self) -> String {
         match self {
-            Arg::Word(s) | Arg::SingleQuoted(s) | Arg::DoubleQuoted(s) => s,
+            Arg::Word(s) | Arg::SingleQuoted(s) | Arg::DoubleQuoted(s) => s.into_owned(),
         }
     }
 }
 
 #[derive(Clone, Debug)]
-pub enum Command {
+pub enum Command<'a> {
     Simple {
-        command: String,
-        args: Vec<Arg>,
-        redirects: Vec<Redirect>,
+        command: Cow<'a, str>,
+        args: Vec<Arg<'a>>,
+        redirects: Vec<Redirect<'a>>,
     },
-    Pipeline(Box<Command>, Box<Command>),
-    And(Box<Command>, Box<Command>),
-    Or(Box<Command>, Box<Command>),
-    Sequence(Box<Command>, Box<Command>),
-    Background(Box<Command>),
+    Pipeline(Box<Command<'a>>, Box<Command<'a>>),
+    And(Box<Command<'a>>, Box<Command<'a>>),
+    Or(Box<Command<'a>>, Box<Command<'a>>),
+    Sequence(Box<Command<'a>>, Box<Command<'a>>),
+    Background(Box<Command<'a>>),
 }
 
-impl fmt::Display for Command {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+impl<'a> Command<'a> {
+    pub fn to_string(&self) -> String {
         match self {
             Command::Simple {
                 command,
                 args,
                 redirects,
             } => {
-                write!(f, "{}", command)?;
-                if !args.is_empty() {
-                    let str_args: Vec<String> = args.iter().map(|a| a.to_string()).collect();
-                    write!(f, " {}", str_args.join(" "))?;
+                let mut result = command.to_string();
+
+                for arg in args {
+                    result.push_str(&format!(" {}", arg));
                 }
+
                 for redirect in redirects {
-                    write!(f, " {}", redirect)?;
+                    result.push_str(&format!(" {}", redirect));
                 }
-                Ok(())
+
+                result
             }
-            Command::Pipeline(left, right) => write!(f, "{} | {}", left, right),
-            Command::And(left, right) => write!(f, "{} && {}", left, right),
-            Command::Or(left, right) => write!(f, "{} || {}", left, right),
-            Command::Sequence(left, right) => write!(f, "{}; {}", left, right),
-            Command::Background(cmd) => write!(f, "{} &", cmd),
+            Command::Pipeline(left, right) => {
+                format!("{} | {}", left.to_string(), right.to_string())
+            }
+            Command::And(left, right) => {
+                format!("{} && {}", left.to_string(), right.to_string())
+            }
+            Command::Or(left, right) => {
+                format!("{} || {}", left.to_string(), right.to_string())
+            }
+            Command::Sequence(left, right) => {
+                format!("{}; {}", left.to_string(), right.to_string())
+            }
+            Command::Background(cmd) => {
+                format!("{} &", cmd.to_string())
+            }
         }
     }
 }
 
 pub struct Parser<'a> {
-    tokens: Peekable<std::slice::Iter<'a, Token>>,
+    tokens: Peekable<std::slice::Iter<'a, Token<'a>>>,
 }
 
 impl<'a> Parser<'a> {
-    pub fn parse(tokens: &'a [Token]) -> Result<Command> {
+    pub fn parse(tokens: &'a [Token]) -> Result<Command<'a>> {
         Self {
             tokens: tokens.iter().peekable(),
         }
         .run()
     }
 
-    pub fn run(&mut self) -> Result<Command> {
+    pub fn run(&mut self) -> Result<Command<'a>> {
         if self.tokens.peek().is_some() {
             self.parse_sequence()
         } else {
@@ -182,7 +203,7 @@ impl<'a> Parser<'a> {
         }
     }
 
-    fn parse_sequence(&mut self) -> Result<Command> {
+    fn parse_sequence(&mut self) -> Result<Command<'a>> {
         let mut left = self.parse_and_or()?;
 
         while let Some(token) = self.tokens.peek() {
@@ -203,7 +224,7 @@ impl<'a> Parser<'a> {
         Ok(left)
     }
 
-    fn parse_and_or(&mut self) -> Result<Command> {
+    fn parse_and_or(&mut self) -> Result<Command<'a>> {
         let mut left = self.parse_pipeline()?;
         while let Some(token) = self.tokens.peek() {
             if matches!(token, Token::And | Token::Or) {
@@ -223,7 +244,7 @@ impl<'a> Parser<'a> {
         Ok(left)
     }
 
-    fn parse_pipeline(&mut self) -> Result<Command> {
+    fn parse_pipeline(&mut self) -> Result<Command<'a>> {
         let mut left = self.parse_command()?;
         while let Some(token) = self.tokens.peek() {
             if matches!(token, Token::Pipe) {
@@ -243,11 +264,11 @@ impl<'a> Parser<'a> {
         Ok(left)
     }
 
-    fn parse_command(&mut self) -> Result<Command> {
+    fn parse_command(&mut self) -> Result<Command<'a>> {
         use Token::*;
 
         let command = match self.tokens.next() {
-            Some(Word(command_name)) => command_name.clone(),
+            Some(Word(command_name)) => command_name,
             Some(_) => {
                 return Parser::error(
                     "Syntax error: expected a command name at the start of the expression",
@@ -277,13 +298,13 @@ impl<'a> Parser<'a> {
         }
 
         Ok(Command::Simple {
-            command,
+            command: Cow::Borrowed(command),
             args,
             redirects,
         })
     }
 
-    fn parse_redirect(&mut self) -> Result<Redirect> {
+    fn parse_redirect(&mut self) -> Result<Redirect<'a>> {
         let kind_token = self.tokens.next().unwrap();
 
         if matches!(kind_token, Token::RedirectErrAndOut) {
@@ -296,7 +317,7 @@ impl<'a> Parser<'a> {
         match self.tokens.next() {
             Some(Token::Word(file)) => Ok(Redirect {
                 kind: RedirectKind::from_token(kind_token).unwrap(),
-                target: RedirectTarget::File(file.clone()),
+                target: RedirectTarget::File(Cow::Borrowed(file)),
             }),
             Some(_) => Parser::error(
                 "Redirection error: expected a file path, but found an operator or special token",
@@ -315,104 +336,3 @@ impl<'a> Parser<'a> {
         }))
     }
 }
-
-// #[cfg(test)]
-// mod tests {
-//     use super::*;
-//     use crate::tokenizer::Tokenizer;
-
-//     fn parse(input: &str) -> Command {
-//         let tokens = Tokenizer::tokenize(input).unwrap();
-//         Parser::parse(&tokens).unwrap()
-//     }
-
-//     #[test]
-//     fn test_simple_command() {
-//         let cmd = parse("echo hello world");
-//         assert!(matches!(cmd, Command::Simple { command, args, .. }
-//             if command == "echo" && args == vec!["hello", "world"]));
-//     }
-
-//     #[test]
-//     fn test_single_quoted_arg() {
-//         let cmd = parse("echo 'hello world'");
-//         assert!(matches!(cmd, Command::Simple { args, .. }
-//             if args == vec!["hello world"]));
-//     }
-
-//     #[test]
-//     fn test_pipeline() {
-//         let cmd = parse("ls | grep foo");
-//         assert!(matches!(cmd, Command::Pipeline(_, _)));
-//     }
-
-//     #[test]
-//     fn test_and() {
-//         let cmd = parse("make && make install");
-//         assert!(matches!(cmd, Command::And(_, _)));
-//     }
-
-//     #[test]
-//     fn test_or() {
-//         let cmd = parse("cd foo || echo nope");
-//         assert!(matches!(cmd, Command::Or(_, _)));
-//     }
-
-//     #[test]
-//     fn test_sequence() {
-//         let cmd = parse("echo hello; echo world");
-//         assert!(matches!(cmd, Command::Sequence(_, _)));
-//     }
-
-//     #[test]
-//     fn test_background() {
-//         let cmd = parse("sleep 10 &");
-//         assert!(matches!(cmd, Command::Background(_)));
-//     }
-
-//     #[test]
-//     fn test_redirect_out() {
-//         let cmd = parse("echo foo > out.txt");
-//         assert!(matches!(cmd, Command::Simple { redirects, .. }
-//             if matches!(redirects[0].kind, RedirectKind::Out)));
-//     }
-
-//     #[test]
-//     fn test_redirect_in() {
-//         let cmd = parse("grep foo < in.txt");
-//         assert!(matches!(cmd, Command::Simple { redirects, .. }
-//             if matches!(redirects[0].kind, RedirectKind::In)));
-//     }
-
-//     #[test]
-//     fn test_multiple_redirects() {
-//         let cmd = parse("cmd < in.txt > out.txt 2> err.txt");
-//         assert!(matches!(cmd, Command::Simple { redirects, .. }
-//             if redirects.len() == 3));
-//     }
-
-//     #[test]
-//     fn test_trailing_semicolon() {
-//         let cmd = parse("echo hello;");
-//         assert!(matches!(cmd, Command::Simple { .. }));
-//     }
-
-//     #[test]
-//     fn test_pipeline_background() {
-//         let cmd = parse("ls | grep foo &");
-//         assert!(matches!(cmd, Command::Background(_)));
-//     }
-
-//     #[test]
-//     fn test_precedence() {
-//         // Should parse as: b && (c | d), wrapped in sequence with a
-//         let cmd = parse("a ; b && c | d");
-//         assert!(matches!(cmd, Command::Sequence(_, right)
-//             if matches!(*right, Command::And(_, _))));
-//     }
-
-//     #[test]
-//     fn test_empty_input() {
-//         assert!(Parser::parse(&[]).is_err());
-//     }
-// }

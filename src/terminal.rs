@@ -6,13 +6,15 @@ use crossterm::{
     execute,
     terminal::{Clear, ClearType},
 };
-use std::{io::{Stdout, Write, stdout}, os::fd::AsRawFd};
+use std::{
+    io::{Stdout, Write, stdout},
+    os::fd::AsRawFd,
+};
 
 pub struct Terminal {
     pub stdout: Stdout,
     pub notifications: Vec<String>,
     is_raw: bool,
-
 }
 
 impl Terminal {
@@ -26,25 +28,24 @@ impl Terminal {
 
     /// Enter raw mode explicitly
     pub fn enter_raw_mode(&mut self) -> Result<()> {
-            if !self.is_raw {
-                crossterm::terminal::enable_raw_mode()
-                    .context("Failed to enable terminal raw mode")?;
+        if !self.is_raw {
+            crossterm::terminal::enable_raw_mode().context("Failed to enable terminal raw mode")?;
 
-                let fd = self.stdout.as_raw_fd();
-                unsafe {
-                    let mut termios = std::mem::zeroed();
-                    libc::tcgetattr(fd, &mut termios);
+            let fd = self.stdout.as_raw_fd();
+            unsafe {
+                let mut termios = std::mem::zeroed();
+                libc::tcgetattr(fd, &mut termios);
 
-                    // Keep output processing (OPOST) and force NL to CR-NL (ONLCR)
-                    termios.c_oflag |= libc::OPOST | libc::ONLCR;
+                // Keep output processing (OPOST) and force NL to CR-NL (ONLCR)
+                termios.c_oflag |= libc::OPOST | libc::ONLCR;
 
-                    libc::tcsetattr(fd, libc::TCSANOW, &termios);
-                }
-
-                self.is_raw = true;
+                libc::tcsetattr(fd, libc::TCSANOW, &termios);
             }
-            Ok(())
+
+            self.is_raw = true;
         }
+        Ok(())
+    }
 
     /// Exit raw mode explicitly
     pub fn exit_raw_mode(&mut self) -> Result<()> {

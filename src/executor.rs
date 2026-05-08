@@ -11,7 +11,11 @@ use crate::{
 use anyhow::{Context as AnyhowContext, Ok, Result};
 use std::{ffi::CString, io, os::fd::RawFd};
 
-pub fn execute(context: &mut Context, command: Command, terminal: &mut Terminal) -> Result<i32> {
+pub fn execute(
+    context: &mut Context,
+    command: Command<'static>,
+    terminal: &mut Terminal,
+) -> Result<i32> {
     if let Command::Simple {
         command: ref name,
         ref args,
@@ -19,16 +23,17 @@ pub fn execute(context: &mut Context, command: Command, terminal: &mut Terminal)
     } = command
     {
         if let Some(builtin) = context.builtins.get(name) {
-            let str_args: Vec<String> = args.iter().map(|a| a.to_string()).collect();
+            let str_args: Vec<&str> = args.iter().map(|a| a.as_str()).collect();
             return builtin(&str_args, context, terminal);
         }
     }
 
+    let command_str = command.to_string();
     match command {
         Command::Simple { .. } => {
             let pgid = spawn_process(
                 context,
-                command.clone(),
+                command,
                 libc::STDIN_FILENO,
                 libc::STDOUT_FILENO,
                 None,
@@ -37,7 +42,7 @@ pub fn execute(context: &mut Context, command: Command, terminal: &mut Terminal)
 
             context
                 .jobs
-                .wait_foreground(context.pgid, terminal, pgid, command, &[pgid], true)
+                .wait_foreground(context.pgid, terminal, pgid, command_str, &[pgid], true)
         }
 
         Command::And(left, right) => {
@@ -82,7 +87,7 @@ pub fn execute(context: &mut Context, command: Command, terminal: &mut Terminal)
             if let Command::Simple { .. } = *command {
                 let pid = spawn_process(
                     context,
-                    *command.clone(),
+                    *command,
                     libc::STDIN_FILENO,
                     pipe_write,
                     None,
@@ -94,7 +99,7 @@ pub fn execute(context: &mut Context, command: Command, terminal: &mut Terminal)
                 let job_id = context.jobs.add(Job::new(
                     pid,
                     vec![pid],
-                    *command,
+                    command_str,
                     JobState::Running,
                     Some(pipe_read),
                 ));
@@ -106,7 +111,7 @@ pub fn execute(context: &mut Context, command: Command, terminal: &mut Terminal)
             } else {
                 let (gpid, pids) = spawn_piped(
                     context,
-                    *command.clone(),
+                    *command,
                     libc::STDIN_FILENO,
                     pipe_write,
                     None,
@@ -115,15 +120,15 @@ pub fn execute(context: &mut Context, command: Command, terminal: &mut Terminal)
 
                 unsafe { libc::close(pipe_write) };
 
+                context.last_job_pid = Some(*pids.last().unwrap());
+
                 let job_id = context.jobs.add(Job::new(
                     gpid,
                     pids.clone(),
-                    *command.clone(),
+                    command_str,
                     JobState::Running,
                     Some(pipe_read),
                 ));
-
-                context.last_job_pid = Some(*pids.last().unwrap());
 
                 terminal.print(&format!("[{}] ", job_id))?;
                 for pid in pids {
@@ -138,7 +143,7 @@ pub fn execute(context: &mut Context, command: Command, terminal: &mut Terminal)
         Command::Pipeline(..) => {
             let (gpid, pids) = spawn_piped(
                 context,
-                command.clone(),
+                command,
                 libc::STDIN_FILENO,
                 libc::STDOUT_FILENO,
                 None,
@@ -147,7 +152,7 @@ pub fn execute(context: &mut Context, command: Command, terminal: &mut Terminal)
 
             context
                 .jobs
-                .wait_foreground(context.pgid, terminal, gpid, command, &pids, true)
+                .wait_foreground(context.pgid, terminal, gpid, command_str, &pids, true)
         }
     }
 }
@@ -166,7 +171,7 @@ fn spawn_process(
             args,
             redirects,
         } => {
-            let str_args: Vec<String> = args.iter().map(|a| a.to_string()).collect();
+            let str_args: Vec<&str> = args.iter().map(|a| a.as_str()).collect();
             let (command, args) = to_cstring(&command, &str_args)?;
 
             unsafe {
@@ -310,7 +315,7 @@ fn set_stdio(redirects: Vec<Redirect>) -> Result<()> {
             }
             _ => {
                 let path = match redirect.get_target_path() {
-                    Some(path) => CString::new(path.as_str()).with_context(|| {
+                    Some(path) => CString::new(path).with_context(|| {
                         format!("Failed to convert target path to CString {}", path)
                     })?,
                     None => unreachable!(
@@ -352,7 +357,7 @@ fn set_stdio(redirects: Vec<Redirect>) -> Result<()> {
     Ok(())
 }
 
-fn to_cstring(raw_command: &str, raw_args: &[String]) -> Result<(CString, Vec<CString>)> {
+fn to_cstring(raw_command: &str, raw_args: &[&str]) -> Result<(CString, Vec<CString>)> {
     let command = CString::new(raw_command)
         .with_context(|| format!("Failed to convert command '{}' to CString", raw_command))?;
 
@@ -360,7 +365,7 @@ fn to_cstring(raw_command: &str, raw_args: &[String]) -> Result<(CString, Vec<CS
 
     for arg in raw_args {
         args.push(
-            CString::new(arg.as_str())
+            CString::new(*arg)
                 .with_context(|| format!("Failed to convert argument '{}' to CString", arg))?,
         );
     }

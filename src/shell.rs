@@ -66,7 +66,7 @@ impl Shell {
         &mut self,
         editor: &mut Editor,
         prompt: &mut Prompt,
-    ) -> Result<Option<Command>> {
+    ) -> Result<Option<Command<'static>>> {
         let line = editor.read_line(&mut self.context, &mut self.terminal, prompt)?;
         if line.is_empty() {
             return Ok(None);
@@ -74,27 +74,28 @@ impl Shell {
 
         let tokens = Tokenizer::tokenize(&line)?;
         let raw_command = Parser::parse(&tokens)?;
-
-        Ok(Some(expander::expand(&mut self.context, raw_command)?))
+        let command = expander::expand(&mut self.context, raw_command)?;
+        Ok(Some(command))
     }
 
-    fn execute_command(&mut self, command: Command) -> Result<bool> {
+    fn execute_command(&mut self, command: Command<'static>) -> Result<bool> {
         self.terminal.exit_raw_mode()?;
 
         let result = executor::execute(&mut self.context, command, &mut self.terminal);
 
         self.terminal.enter_raw_mode()?;
 
-        if let Ok(exit_code) = result {
-            self.context.last_exit_code = exit_code;
-        } else if let Err(ref error) = result {
-            if let Some(shell_err) = error.downcast_ref::<ShellError>() {
-                if shell_err.is_exit() {
-                    return Ok(false);
+        match result {
+            Ok(exit_code) => self.context.last_exit_code = exit_code,
+            Err(error) => {
+                if let Some(shell_err) = error.downcast_ref::<ShellError>() {
+                    if shell_err.is_exit() {
+                        return Ok(false);
+                    }
                 }
+                self.terminal.println(&format!("{:?}", error))?;
             }
-            self.terminal.println(&format!("{:?}", error))?;
-        }
+        };
 
         Ok(true)
     }

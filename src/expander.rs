@@ -2,31 +2,26 @@
 
 use crate::error::{ShellError, ShellPhase};
 use anyhow::Result;
+use std::borrow::Cow;
 use std::env;
 
 use crate::context::Context;
-use crate::parser::{Arg, Command};
+use crate::parser::{Arg, Command, Redirect, RedirectTarget};
 
-pub fn expand(context: &mut Context, command: Command) -> Result<Command> {
+pub fn expand<'a>(context: &mut Context, command: Command<'a>) -> Result<Command<'static>> {
     match command {
         Command::Simple {
             command,
             args,
             redirects,
         } => {
-            let mut expanded_args: Vec<Arg> = Vec::new();
-            for arg in args {
-                let expanded_arg = match arg {
-                    Arg::Word(s) => Arg::Word(expand_string(context, s)?),
-                    Arg::DoubleQuoted(s) => Arg::DoubleQuoted(expand_string(context, s)?),
-                    Arg::SingleQuoted(s) => Arg::SingleQuoted(s),
-                };
-                expanded_args.push(expanded_arg);
-            }
+            let command = Cow::Owned(expand_string(context, command)?);
+            let args = expand_args(context, args)?;
+            let redirects = expanded_redirects(context, redirects)?;
 
             Ok(Command::Simple {
-                command: expand_string(context, command)?,
-                args: expanded_args,
+                command,
+                args,
                 redirects,
             })
         }
@@ -50,7 +45,11 @@ pub fn expand(context: &mut Context, command: Command) -> Result<Command> {
     }
 }
 
-fn expand_string(context: &mut Context, to_expand: String) -> Result<String> {
+fn expand_string<'a>(context: &mut Context, to_expand: Cow<'a, str>) -> Result<String> {
+    if !to_expand.contains(['$', '~']) {
+        return Ok(to_expand.to_string());
+    }
+
     let mut expanded = String::new();
     let mut chars = to_expand.char_indices().peekable();
 
@@ -120,6 +119,43 @@ fn expand_string(context: &mut Context, to_expand: String) -> Result<String> {
     Ok(expanded)
 }
 
+fn expand_args(context: &mut Context, args: Vec<Arg>) -> Result<Vec<Arg<'static>>> {
+    let mut expanded_args = Vec::new();
+    for arg in args {
+        let expanded_arg = match arg {
+            Arg::Word(s) => Arg::Word(Cow::Owned(expand_string(context, s)?)),
+            Arg::DoubleQuoted(s) => Arg::DoubleQuoted(Cow::Owned(expand_string(context, s)?)),
+            Arg::SingleQuoted(s) => Arg::SingleQuoted(Cow::Owned(s.into_owned())), // Convert to owned
+        };
+        expanded_args.push(expanded_arg);
+    }
+
+    Ok(expanded_args)
+}
+
+fn expanded_redirects(
+    context: &mut Context,
+    redirects: Vec<Redirect>,
+) -> Result<Vec<Redirect<'static>>> {
+    let mut expanded_redirects = Vec::new();
+    for redirect in redirects {
+        let target = match redirect.target {
+            RedirectTarget::File(cow) => {
+                let expanded_path = expand_string(context, cow)?;
+                RedirectTarget::File(Cow::Owned(expanded_path))
+            }
+            RedirectTarget::FileDescriptor(fd) => RedirectTarget::FileDescriptor(fd),
+        };
+
+        expanded_redirects.push(Redirect {
+            kind: redirect.kind,
+            target,
+        });
+    }
+
+    Ok(expanded_redirects)
+}
+
 fn error<T>(message: &str) -> Result<T> {
     Err(anyhow::Error::new(ShellError {
         phase: ShellPhase::Expander,
@@ -127,71 +163,3 @@ fn error<T>(message: &str) -> Result<T> {
         message: message.into(),
     }))
 }
-
-// #[cfg(test)]
-// mod tests {
-//     use super::*;
-
-//     // Helper to simplify tests and handle the Result
-//     fn expand(input: &str) -> String {
-//         expand_string(input.to_string()).expect("Expansion failed unexpectedly")
-//     }
-
-//     #[test]
-//     fn test_plain_string() {
-//         assert_eq!(expand("hello world"), "hello world");
-//     }
-
-//     #[test]
-//     fn test_tilde_expansion() {
-//         // We handle the case where HOME might not be set in the test environment
-//         if let Ok(home) = env::var("HOME") {
-//             assert_eq!(expand("~/foo"), format!("{}/foo", home));
-//         } else {
-//             // If no HOME, POSIX says it stays as ~ based on your match logic
-//             assert_eq!(expand("~/foo"), "~/foo");
-//         }
-//     }
-
-//     #[test]
-//     fn test_tilde_not_at_start() {
-//         assert_eq!(expand("foo~bar"), "foo~bar");
-//     }
-
-//     #[test]
-//     fn test_variable_expansions() {
-//         // Setting env vars for the duration of this test
-//         unsafe {
-//             env::set_var("TEST_VAR", "hello");
-//         }
-
-//         assert_eq!(expand("$TEST_VAR"), "hello");
-//         assert_eq!(expand("hello $TEST_VAR"), "hello hello");
-//         assert_eq!(expand("${TEST_VAR}"), "hello");
-//         assert_eq!(expand("$TEST_VAR/foo"), "hello/foo");
-//     }
-
-//     #[test]
-//     fn test_undefined_variable() {
-//         // Ensure the var definitely doesn't exist
-//         unsafe {
-//             env::remove_var("UNDEFINED_VAR_XYZ");
-//         }
-//         assert_eq!(expand("$UNDEFINED_VAR_XYZ"), "");
-//     }
-
-//     #[test]
-//     fn test_lone_dollar() {
-//         // A lone $ with no alphanumeric chars following should probably stay a $
-//         // or follow your specific logic (currently it returns empty)
-//         assert_eq!(expand("$"), "");
-//     }
-
-//     #[test]
-//     fn test_unclosed_bracket_error() {
-//         let result = expand_string("${UNCLOSED".to_string());
-//         assert!(result.is_err());
-//         let err = result.unwrap_err().to_string();
-//         assert!(err.contains("unclosed variable expansion bracket"));
-//     }
-// }

@@ -9,7 +9,7 @@ use crate::{
 use anyhow::{Context as AnyhowContext, Result};
 use std::{collections::HashMap, env, path::PathBuf};
 
-pub type Builtin = fn(&[String], &mut Context, &mut Terminal) -> Result<i32>;
+pub type Builtin = fn(&[&str], &mut Context, &mut Terminal) -> Result<i32>;
 
 pub struct BuiltIns {
     programs: HashMap<String, Builtin>,
@@ -32,9 +32,9 @@ impl BuiltIns {
         self.programs.get(name).copied()
     }
 
-    pub fn cd(args: &[String], _: &mut Context, _: &mut Terminal) -> Result<i32> {
+    pub fn cd(args: &[&str], _: &mut Context, _: &mut Terminal) -> Result<i32> {
         let target = if !args.is_empty() {
-            if &args[0] == "-" {
+            if args[0] == "-" {
                 match env::var("OLDPWD") {
                     Ok(old) => PathBuf::from(old),
                     Err(_) => return Self::error("cd", "OLDPWD environment variable isn't set"),
@@ -61,11 +61,11 @@ impl BuiltIns {
         Ok(0)
     }
 
-    pub fn exit(_args: &[String], _: &mut Context, _: &mut Terminal) -> Result<i32> {
+    pub fn exit(_args: &[&str], _: &mut Context, _: &mut Terminal) -> Result<i32> {
         Err(ShellError::exit())?
     }
 
-    pub fn jobs(_: &[String], context: &mut Context, terminal: &mut Terminal) -> Result<i32> {
+    pub fn jobs(_: &[&str], context: &mut Context, terminal: &mut Terminal) -> Result<i32> {
         for (_, job) in &context.jobs.table {
             terminal.println(&job.to_string())?;
         }
@@ -73,7 +73,7 @@ impl BuiltIns {
         Ok(0)
     }
 
-    pub fn fg(args: &[String], context: &mut Context, terminal: &mut Terminal) -> Result<i32> {
+    pub fn fg(args: &[&str], context: &mut Context, terminal: &mut Terminal) -> Result<i32> {
         let job_id = Self::job_id_from_args("fg", args, context)?;
 
         let (pgid, command, pids) = match context.jobs.table.get(&job_id) {
@@ -111,7 +111,7 @@ impl BuiltIns {
         Ok(exit_code)
     }
 
-    pub fn bg(args: &[String], context: &mut Context, terminal: &mut Terminal) -> Result<i32> {
+    pub fn bg(args: &[&str], context: &mut Context, terminal: &mut Terminal) -> Result<i32> {
         let job_id = Self::job_id_from_args("bg", args, context)?;
         let job = match context.jobs.table.get_mut(&job_id) {
             Some(job) => job,
@@ -132,11 +132,7 @@ impl BuiltIns {
         Ok(0)
     }
 
-    fn job_id_from_args(
-        command_name: &str,
-        args: &[String],
-        context: &mut Context,
-    ) -> Result<usize> {
+    fn job_id_from_args(command_name: &str, args: &[&str], context: &mut Context) -> Result<usize> {
         if !args.is_empty() && args.len() != 1 {
             return Self::error(command_name, "Only one argument is expected");
         }
@@ -177,7 +173,7 @@ impl BuiltIns {
         }))
     }
 
-    pub fn history(_: &[String], context: &mut Context, terminal: &mut Terminal) -> Result<i32> {
+    pub fn history(_: &[&str], context: &mut Context, terminal: &mut Terminal) -> Result<i32> {
         for (n, line) in context.history.current.iter().enumerate() {
             terminal.println(&format!("{} {}", n, line))?;
         }

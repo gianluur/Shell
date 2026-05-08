@@ -1,4 +1,4 @@
-use crate::{parser::Command, terminal::Terminal};
+use crate::terminal::Terminal;
 use anyhow::Result;
 use std::{collections::HashMap, fmt, os::fd::RawFd};
 
@@ -19,28 +19,28 @@ impl fmt::Display for JobState {
 
 pub struct Job {
     pub pgid: libc::pid_t,
+    pub remaining: usize,
     pub pids: Vec<libc::pid_t>,
-    pub command: Command,
+    pub command: String,
     pub state: JobState,
     pub stdout_fd: Option<RawFd>, // Some for background, None for foreground
-    pub remaining: usize,
 }
 
 impl Job {
     pub fn new(
         pgid: libc::pid_t,
         pids: Vec<libc::pid_t>,
-        command: Command,
+        command: String,
         state: JobState,
         stdout_fd: Option<RawFd>,
     ) -> Self {
         Job {
             pgid,
-            pids: pids.clone(),
+            remaining: pids.len(),
+            pids: pids,
             command,
             state,
             stdout_fd,
-            remaining: pids.len(),
         }
     }
 
@@ -192,7 +192,7 @@ impl Jobs {
         shell_gpid: libc::pid_t,
         terminal: &mut Terminal,
         pgid: libc::pid_t,
-        command: Command,
+        command: String,
         pids: &[libc::pid_t],
         is_new_job: bool,
     ) -> Result<i32> {
