@@ -26,6 +26,8 @@ impl BuiltIns {
         programs.insert("history".to_string(), Self::history);
         programs.insert("alias".to_string(), Self::alias);
         programs.insert("unalias".to_string(), Self::unalias);
+        programs.insert("export".to_string(), Self::export);
+        programs.insert("unset".to_string(), Self::unset);
 
         Self { programs }
     }
@@ -175,31 +177,13 @@ impl BuiltIns {
     }
 
     pub fn alias(args: &[&str], context: &mut Context, terminal: &mut Terminal) -> Result<i32> {
-        if args.len() > 1 {
-            return Self::error("alias", "Only either none or 1 parameter");
-        }
+        let (name, mut value) = Self::parse_name_equal_value("alias", args)?;
 
         if args.len() == 0 {
             for (name, value) in context.aliases.get_map() {
                 terminal.println(&format!("{name}={value}"))?;
             }
             return Ok(0);
-        }
-
-        let parts: Vec<&str> = args[0].split('=').collect();
-        if parts.len() != 2 {
-            return Self::error("alias", "Invalid format, use name='value'");
-        }
-
-        let name = parts[0].trim();
-        let mut value = parts[1].trim();
-
-        if name.len() == 0 {
-            return Self::error("alias", "Name can't be empty");
-        }
-
-        if value.len() == 0 {
-            return Self::error("alias", "Value can't be empty");
         }
 
         if value.starts_with('\'') && value.ends_with('\'')
@@ -226,6 +210,55 @@ impl BuiltIns {
         context.aliases.remove(name);
 
         Ok(0)
+    }
+
+    pub fn export(args: &[&str], _: &mut Context, _: &mut Terminal) -> Result<i32> {
+        let (name, value) = Self::parse_name_equal_value("export", args)?;
+
+        unsafe {
+            env::set_var(name, value);
+        }
+
+        Ok(0)
+    }
+
+    pub fn unset(args: &[&str], _: &mut Context, _: &mut Terminal) -> Result<i32> {
+        if args.len() > 1 {
+            return Self::error("unset", "Only either none or 1 parameter");
+        }
+
+        unsafe {
+            env::remove_var(args[0]);
+        }
+
+        Ok(0)
+    }
+
+    fn parse_name_equal_value<'a>(
+        function_name: &str,
+        args: &'a [&str],
+    ) -> Result<(&'a str, &'a str)> {
+        if args.len() > 1 {
+            return Self::error(function_name, "Only either none or 1 parameter");
+        }
+
+        let parts: Vec<&str> = args[0].split('=').collect();
+        if parts.len() != 2 {
+            return Self::error(function_name, "Invalid format, use name='value'");
+        }
+
+        let name = parts[0].trim();
+        let value = parts[1].trim();
+
+        if name.len() == 0 {
+            return Self::error(function_name, "Name can't be empty");
+        }
+
+        if value.len() == 0 {
+            return Self::error(function_name, "Value can't be empty");
+        }
+
+        Ok((name, value))
     }
 
     fn error<T>(name: &str, message: &str) -> Result<T> {

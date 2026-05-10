@@ -64,7 +64,7 @@ fn expand_simple_command<'a>(
     {
         // We need to parse the aliased command, because it was written in just string form
         // So we currently have no way to check where are the arguments, what kind of argument they are etc...
-        let aliased_command = Shell::parse_command(context, &alias)
+        let aliased_command = Shell::parse_command(context, &alias, false)
             .context(format!("Failed to parse alias: {alias}"))?;
 
         // We keep an expanded paramenter to this function that allows us to stop recursion by avoiding infinite loops
@@ -132,11 +132,7 @@ fn expand_simple_command<'a>(
             }
         }
     } else {
-        Ok(Command::Simple {
-            command: command.into_owned().into(),
-            args: expand_args(context, args)?,
-            redirects: expanded_redirects(context, redirects)?,
-        })
+        Ok(to_owned(context, command, args, redirects)?)
     }
 }
 
@@ -285,6 +281,19 @@ fn expanded_redirects(
     }
 
     Ok(expanded_redirects)
+}
+
+pub fn to_owned<'a>(
+    context: &mut Context,
+    command: Cow<'a, str>,
+    args: Vec<Arg>,
+    redirects: Vec<Redirect>,
+) -> Result<Command<'static>> {
+    Ok(Command::Simple {
+        command: command.into_owned().into(),
+        args: expand_args(context, args)?,
+        redirects: expanded_redirects(context, redirects)?,
+    })
 }
 
 fn error<T>(message: &str) -> Result<T> {

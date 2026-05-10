@@ -2,7 +2,7 @@
 
 use crate::error::{ShellError, ShellPhase};
 use crate::tokenizer::Token;
-use anyhow::Result;
+use anyhow::{Ok, Result};
 use std::{
     borrow::Cow,
     fmt::{self},

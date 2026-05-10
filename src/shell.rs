@@ -49,7 +49,7 @@ impl Shell {
                 continue;
             }
 
-            let command = Self::parse_command(&mut self.context, &line)?;
+            let command = Self::parse_command(&mut self.context, &line, true)?;
             if !Self::execute_command(&mut self.context, &mut self.terminal, command)? {
                 break;
             }
@@ -75,11 +75,29 @@ impl Shell {
         Ok(())
     }
 
-    pub fn parse_command(context: &mut Context, line: &str) -> Result<Command<'static>> {
+    pub fn parse_command(
+        context: &mut Context,
+        line: &str,
+        should_expand: bool,
+    ) -> Result<Command<'static>> {
         let tokens = Tokenizer::tokenize(&line)?;
         let raw_command = Parser::parse(&tokens)?;
-        let command = expander::expand(context, raw_command, &Vec::new())?;
-        Ok(command)
+
+        if should_expand {
+            let command = expander::expand(context, raw_command, &Vec::new())?;
+            Ok(command)
+        } else {
+            if let Command::Simple {
+                command,
+                args,
+                redirects,
+            } = raw_command
+            {
+                Ok(expander::to_owned(context, command, args, redirects)?)
+            } else {
+                unreachable!("You can only own simple command")
+            }
+        }
     }
 
     fn execute_command(
