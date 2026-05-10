@@ -1,6 +1,8 @@
 //context.rs
 
-use crate::{builtins::BuiltIns, history::History, jobs::Jobs, signals::SignalHandler};
+use crate::{
+    aliases::Aliases, builtins::BuiltIns, history::History, jobs::Jobs, signals::SignalHandler,
+};
 use anyhow::{Result, anyhow};
 use libc::{self};
 use std::{env, path::PathBuf};
@@ -16,6 +18,7 @@ pub struct Context {
     pub last_exit_code: i32,
     pub last_job_pid: Option<libc::pid_t>,
     pub history: History,
+    pub aliases: Aliases,
 }
 
 impl Context {
@@ -31,6 +34,7 @@ impl Context {
             last_exit_code: 0,
             last_job_pid: None,
             history: History::new()?,
+            aliases: Aliases::new(),
         };
         let home_directory = context.update_cwd();
         unsafe {

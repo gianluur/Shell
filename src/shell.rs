@@ -37,13 +37,21 @@ impl Shell {
                 self.context.jobs.update_table(&mut self.terminal)?;
             }
 
-            self.update_prompt(&mut editor, &mut prompt)?;
+            Self::update_prompt(
+                &mut self.context,
+                &mut self.terminal,
+                &mut editor,
+                &mut prompt,
+            )?;
 
-            let command = self.parse_command(&mut editor, &mut prompt)?;
-            if let Some(command) = command {
-                if !self.execute_command(command)? {
-                    break;
-                }
+            let line = editor.read_line(&mut self.context, &mut self.terminal, &mut prompt)?;
+            if line.is_empty() {
+                continue;
+            }
+
+            let command = Self::parse_command(&mut self.context, &line)?;
+            if !Self::execute_command(&mut self.context, &mut self.terminal, command)? {
+                break;
             }
         }
 
@@ -52,48 +60,48 @@ impl Shell {
         Ok(())
     }
 
-    fn update_prompt(&mut self, editor: &mut Editor, prompt: &mut Prompt) -> Result<()> {
-        prompt.update(self.context.update_cwd());
+    fn update_prompt(
+        context: &mut Context,
+        terminal: &mut Terminal,
+        editor: &mut Editor,
+        prompt: &mut Prompt,
+    ) -> Result<()> {
+        prompt.update(context.update_cwd());
 
-        if let Err(e) = editor.set_prompt(&mut self.terminal) {
-            self.terminal.println(&format!("Terminal Error: {:?}", e))?;
+        if let Err(e) = editor.set_prompt(terminal) {
+            terminal.println(&format!("Terminal Error: {:?}", e))?;
         }
 
         Ok(())
     }
 
-    fn parse_command(
-        &mut self,
-        editor: &mut Editor,
-        prompt: &mut Prompt,
-    ) -> Result<Option<Command<'static>>> {
-        let line = editor.read_line(&mut self.context, &mut self.terminal, prompt)?;
-        if line.is_empty() {
-            return Ok(None);
-        }
-
+    pub fn parse_command(context: &mut Context, line: &str) -> Result<Command<'static>> {
         let tokens = Tokenizer::tokenize(&line)?;
         let raw_command = Parser::parse(&tokens)?;
-        let command = expander::expand(&mut self.context, raw_command)?;
-        Ok(Some(command))
+        let command = expander::expand(context, raw_command, &Vec::new())?;
+        Ok(command)
     }
 
-    fn execute_command(&mut self, command: Command<'static>) -> Result<bool> {
-        self.terminal.exit_raw_mode()?;
+    fn execute_command(
+        context: &mut Context,
+        terminal: &mut Terminal,
+        command: Command<'static>,
+    ) -> Result<bool> {
+        terminal.exit_raw_mode()?;
 
-        let result = executor::execute(&mut self.context, command, &mut self.terminal);
+        let result = executor::execute(context, command, terminal);
 
-        self.terminal.enter_raw_mode()?;
+        terminal.enter_raw_mode()?;
 
         match result {
-            Ok(exit_code) => self.context.last_exit_code = exit_code,
+            Ok(exit_code) => context.last_exit_code = exit_code,
             Err(error) => {
                 if let Some(shell_err) = error.downcast_ref::<ShellError>() {
                     if shell_err.is_exit() {
                         return Ok(false);
                     }
                 }
-                self.terminal.println(&format!("{:?}", error))?;
+                terminal.println(&format!("{:?}", error))?;
             }
         };
 

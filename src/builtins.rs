@@ -24,6 +24,8 @@ impl BuiltIns {
         programs.insert("fg".to_string(), Self::fg);
         programs.insert("bg".to_string(), Self::bg);
         programs.insert("history".to_string(), Self::history);
+        programs.insert("alias".to_string(), Self::alias);
+        programs.insert("unalias".to_string(), Self::unalias);
 
         Self { programs }
     }
@@ -165,18 +167,72 @@ impl BuiltIns {
         Ok(job_id)
     }
 
+    pub fn history(_: &[&str], context: &mut Context, terminal: &mut Terminal) -> Result<i32> {
+        for (n, line) in context.history.current.iter().enumerate() {
+            terminal.println(&format!("{} {}", n, line))?;
+        }
+        Ok(0)
+    }
+
+    pub fn alias(args: &[&str], context: &mut Context, terminal: &mut Terminal) -> Result<i32> {
+        if args.len() > 1 {
+            return Self::error("alias", "Only either none or 1 parameter");
+        }
+
+        if args.len() == 0 {
+            for (name, value) in context.aliases.get_map() {
+                terminal.println(&format!("{name}={value}"))?;
+            }
+            return Ok(0);
+        }
+
+        let parts: Vec<&str> = args[0].split('=').collect();
+        if parts.len() != 2 {
+            return Self::error("alias", "Invalid format, use name='value'");
+        }
+
+        let name = parts[0].trim();
+        let mut value = parts[1].trim();
+
+        if name.len() == 0 {
+            return Self::error("alias", "Name can't be empty");
+        }
+
+        if value.len() == 0 {
+            return Self::error("alias", "Value can't be empty");
+        }
+
+        if value.starts_with('\'') && value.ends_with('\'')
+            || value.starts_with('"') && value.ends_with('"')
+        {
+            value = &value[1..value.len() - 1];
+        }
+
+        context.aliases.add(name.to_string(), value.to_string());
+
+        Ok(0)
+    }
+
+    pub fn unalias(args: &[&str], context: &mut Context, _: &mut Terminal) -> Result<i32> {
+        if args.len() != 1 {
+            return Self::error("unalias", "Only accepts 1 parameter");
+        }
+
+        let name = args[0];
+        if context.aliases.get(name).is_none() {
+            return Self::error("unalias", &format!("No alias found for name: {name}"));
+        }
+
+        context.aliases.remove(name);
+
+        Ok(0)
+    }
+
     fn error<T>(name: &str, message: &str) -> Result<T> {
         Err(anyhow::Error::new(ShellError {
             phase: ShellPhase::Executor,
             command: Some(name.to_string()),
             message: message.into(),
         }))
-    }
-
-    pub fn history(_: &[&str], context: &mut Context, terminal: &mut Terminal) -> Result<i32> {
-        for (n, line) in context.history.current.iter().enumerate() {
-            terminal.println(&format!("{} {}", n, line))?;
-        }
-        Ok(0)
     }
 }

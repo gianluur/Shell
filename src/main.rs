@@ -1,5 +1,6 @@
 //main.rs
 
+mod aliases;
 mod builtins;
 mod context;
 mod editor;

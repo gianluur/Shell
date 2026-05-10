@@ -3,6 +3,7 @@
 use crate::error::{ShellError, ShellPhase};
 use anyhow::Result;
 
+#[derive(Debug)]
 pub enum Token<'a> {
     // Words
     Word(&'a str),
@@ -66,10 +67,14 @@ impl<'a> Tokenizer<'a> {
     fn parse_word(&mut self) -> Result<Token<'a>> {
         let start = self.cursor;
         while let Some(character) = self.peek() {
-            if !character.is_whitespace() && !Self::is_operator(character) {
-                self.next();
-            } else {
+            if character.is_whitespace() || Self::is_operator(character) {
                 break;
+            }
+
+            if character == '\'' || character == '"' {
+                self.parse_string()?;
+            } else {
+                self.next();
             }
         }
 
