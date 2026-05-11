@@ -81,7 +81,6 @@ impl Shell {
         should_expand: bool,
     ) -> Result<Command<'static>> {
         let tokens = Tokenizer::tokenize(&line)?;
-        dbg!(&tokens);
         let raw_command = Parser::parse(&tokens)?;
 
         if should_expand {

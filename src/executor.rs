@@ -164,7 +164,6 @@ fn spawn_process(
     pgid: Option<libc::pid_t>,
     is_foreground: bool,
 ) -> Result<libc::pid_t> {
-    dbg!(&command);
     match command {
         Command::Simple {
             command,

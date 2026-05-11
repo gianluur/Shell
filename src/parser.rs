@@ -17,15 +17,8 @@ pub struct EnvVariable<'a> {
 }
 
 impl<'a> EnvVariable<'a> {
-    fn new(name: Cow<'a, str>, value: Cow<'a, str>) -> Self {
+    pub fn new(name: Cow<'a, str>, value: Cow<'a, str>) -> Self {
         Self { name, value }
-    }
-
-    pub fn into_owned(self) -> EnvVariable<'static> {
-        EnvVariable {
-            name: Cow::Owned(self.name.into_owned()),
-            value: Cow::Owned(self.value.into_owned()),
-        }
     }
 
     pub fn strip_quotes_from_value(value: &str) -> &str {
@@ -319,7 +312,6 @@ impl<'a> Parser<'a> {
                 let mut parts = content.splitn(2, '=');
                 let name = parts.next();
                 let value = parts.next();
-                dbg!(&name, &value);
                 match (name, value) {
                     (Some(name), Some(mut value)) => {
                         if name.trim().len() == 0 {

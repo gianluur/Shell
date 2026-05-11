@@ -287,6 +287,21 @@ fn expanded_redirects(
     Ok(expanded_redirects)
 }
 
+fn expand_env_vars<'a>(
+    context: &mut Context,
+    env_vars: Vec<EnvVariable<'a>>,
+) -> Result<Vec<EnvVariable<'static>>> {
+    let mut expanded_env_vars = Vec::new();
+    for var in env_vars {
+        expanded_env_vars.push(EnvVariable::new(
+            Cow::Owned(var.name.into_owned()),
+            Cow::Owned(expand_string(context, var.value)?),
+        ));
+    }
+
+    Ok(expanded_env_vars)
+}
+
 pub fn to_owned<'a>(
     context: &mut Context,
     command: Cow<'a, str>,
@@ -298,7 +313,7 @@ pub fn to_owned<'a>(
         command: command.into_owned().into(),
         args: expand_args(context, args)?,
         redirects: expanded_redirects(context, redirects)?,
-        env_vars: env_vars.into_iter().map(|v| v.into_owned()).collect(),
+        env_vars: expand_env_vars(context, env_vars)?,
     })
 }
 
