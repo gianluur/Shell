@@ -2,12 +2,50 @@
 
 use crate::error::{ShellError, ShellPhase};
 use crate::tokenizer::Token;
-use anyhow::{Ok, Result};
+use anyhow::{Context, Ok, Result};
+use std::ffi::CString;
 use std::{
     borrow::Cow,
     fmt::{self},
     iter::Peekable,
 };
+
+#[derive(Clone, Debug)]
+pub struct EnvVariable<'a> {
+    pub name: Cow<'a, str>,
+    pub value: Cow<'a, str>,
+}
+
+impl<'a> EnvVariable<'a> {
+    fn new(name: Cow<'a, str>, value: Cow<'a, str>) -> Self {
+        Self { name, value }
+    }
+
+    pub fn into_owned(self) -> EnvVariable<'static> {
+        EnvVariable {
+            name: Cow::Owned(self.name.into_owned()),
+            value: Cow::Owned(self.value.into_owned()),
+        }
+    }
+
+    pub fn strip_quotes_from_value(value: &str) -> &str {
+        if (value.starts_with('\'') && value.ends_with('\''))
+            || (value.starts_with('"') && value.ends_with('"'))
+        {
+            &value[1..value.len() - 1]
+        } else {
+            value
+        }
+    }
+
+    pub fn to_cstring(name: &str, value: &str) -> Result<CString> {
+        let formatted = format!("{}={}", name, value);
+        CString::new(formatted).context(format!(
+            "Failed to convert environment variable {}={} to CString",
+            name, value
+        ))
+    }
+}
 
 #[derive(Clone, Debug)]
 pub enum RedirectTarget<'a> {
@@ -138,6 +176,7 @@ pub enum Command<'a> {
         command: Cow<'a, str>,
         args: Vec<Arg<'a>>,
         redirects: Vec<Redirect<'a>>,
+        env_vars: Vec<EnvVariable<'a>>,
     },
     Pipeline(Box<Command<'a>>, Box<Command<'a>>),
     And(Box<Command<'a>>, Box<Command<'a>>),
@@ -153,6 +192,7 @@ impl<'a> Command<'a> {
                 command,
                 args,
                 redirects,
+                env_vars: _,
             } => {
                 let mut result = command.to_string();
 
@@ -269,6 +309,46 @@ impl<'a> Parser<'a> {
     fn parse_command(&mut self) -> Result<Command<'a>> {
         use Token::*;
 
+        let mut env_vars: Vec<EnvVariable<'a>> = Vec::new();
+        while let Some(token) = self.tokens.peek() {
+            if let Token::Word(content) = token
+                && content.contains('=')
+            {
+                self.tokens.next();
+
+                let mut parts = content.splitn(2, '=');
+                let name = parts.next();
+                let value = parts.next();
+                dbg!(&name, &value);
+                match (name, value) {
+                    (Some(name), Some(mut value)) => {
+                        if name.trim().len() == 0 {
+                            return Parser::error(
+                                "Syntax error: the name of a env variable can't be empty",
+                            );
+                        }
+
+                        if value.trim().len() == 0 {
+                            return Parser::error(
+                                "Syntax error: the value of a env variable can't be empty",
+                            );
+                        }
+
+                        value = EnvVariable::strip_quotes_from_value(value);
+
+                        env_vars.push(EnvVariable::new(Cow::Borrowed(name), Cow::Borrowed(value)));
+                    }
+                    _ => {
+                        return Parser::error(
+                            "Syntax error: an envirorment variable, must be formatted using name=value syntax",
+                        );
+                    }
+                }
+            } else {
+                break;
+            }
+        }
+
         let command = match self.tokens.next() {
             Some(Word(command_name)) => command_name,
             Some(_) => {
@@ -303,6 +383,7 @@ impl<'a> Parser<'a> {
             command: Cow::Borrowed(command),
             args,
             redirects,
+            env_vars,
         })
     }
 

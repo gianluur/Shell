@@ -4,6 +4,7 @@ use crate::{
     context::Context,
     error::{ShellError, ShellPhase},
     jobs::JobState,
+    parser::EnvVariable,
     terminal::Terminal,
 };
 use anyhow::{Context as AnyhowContext, Result};
@@ -177,7 +178,7 @@ impl BuiltIns {
     }
 
     pub fn alias(args: &[&str], context: &mut Context, terminal: &mut Terminal) -> Result<i32> {
-        let (name, mut value) = Self::parse_name_equal_value("alias", args)?;
+        let (name, mut value) = Self::check_env_var_args("alias", args)?;
 
         if args.len() == 0 {
             for (name, value) in context.aliases.get_map() {
@@ -186,11 +187,7 @@ impl BuiltIns {
             return Ok(0);
         }
 
-        if value.starts_with('\'') && value.ends_with('\'')
-            || value.starts_with('"') && value.ends_with('"')
-        {
-            value = &value[1..value.len() - 1];
-        }
+        value = EnvVariable::strip_quotes_from_value(value);
 
         context.aliases.add(name.to_string(), value.to_string());
 
@@ -213,7 +210,7 @@ impl BuiltIns {
     }
 
     pub fn export(args: &[&str], _: &mut Context, _: &mut Terminal) -> Result<i32> {
-        let (name, value) = Self::parse_name_equal_value("export", args)?;
+        let (name, value) = Self::check_env_var_args("export", args)?;
 
         unsafe {
             env::set_var(name, value);
@@ -234,10 +231,7 @@ impl BuiltIns {
         Ok(0)
     }
 
-    fn parse_name_equal_value<'a>(
-        function_name: &str,
-        args: &'a [&str],
-    ) -> Result<(&'a str, &'a str)> {
+    fn check_env_var_args<'a>(function_name: &str, args: &'a [&str]) -> Result<(&'a str, &'a str)> {
         if args.len() > 1 {
             return Self::error(function_name, "Only either none or 1 parameter");
         }

@@ -4,11 +4,11 @@ use crate::{
     context::Context,
     error::*,
     jobs::{Job, JobState},
-    parser::{Command, Redirect, RedirectKind},
+    parser::{Command, EnvVariable, Redirect, RedirectKind},
     terminal::Terminal,
 };
 use anyhow::{Context as AnyhowContext, Ok, Result};
-use std::{ffi::CString, io, os::fd::RawFd};
+use std::{collections::HashMap, env, ffi::CString, io, os::fd::RawFd};
 
 pub fn execute(
     context: &mut Context,
@@ -164,19 +164,45 @@ fn spawn_process(
     pgid: Option<libc::pid_t>,
     is_foreground: bool,
 ) -> Result<libc::pid_t> {
+    dbg!(&command);
     match command {
         Command::Simple {
             command,
             args,
             redirects,
+            env_vars,
         } => {
             let str_args: Vec<&str> = args.iter().map(|a| a.as_str()).collect();
             let (command, args) = to_cstring(&command, &str_args)?;
+
+            let mut env_map = HashMap::new();
+            for var in env::vars_os() {
+                env_map.insert(
+                    var.0.to_string_lossy().to_string(),
+                    var.1.to_string_lossy().to_string(),
+                );
+            }
+
+            for var in env_vars {
+                env_map.insert(
+                    var.name.as_ref().to_string(),
+                    var.value.as_ref().to_string(),
+                );
+            }
+
+            let env_vec = env_map
+                .iter()
+                .map(|(name, value)| EnvVariable::to_cstring(name, value))
+                .collect::<Result<Vec<CString>>>()?;
 
             unsafe {
                 // We do one final conversion from CString to const char*
                 let mut argv: Vec<*const libc::c_char> = args.iter().map(|s| s.as_ptr()).collect();
                 argv.push(std::ptr::null());
+
+                let mut envp: Vec<*const libc::c_char> =
+                    env_vec.iter().map(|v| v.as_ptr()).collect();
+                envp.push(std::ptr::null());
 
                 let pid = libc::fork();
 
@@ -209,7 +235,7 @@ fn spawn_process(
                     // Reset signals to defaults (shell may have ignored some)
                     context.signals.reset();
 
-                    libc::execvp(command.as_ptr(), argv.as_ptr());
+                    libc::execvpe(command.as_ptr(), argv.as_ptr(), envp.as_ptr());
 
                     // execvp only returns on failure
                     libc::_exit(1);

@@ -81,6 +81,7 @@ impl Shell {
         should_expand: bool,
     ) -> Result<Command<'static>> {
         let tokens = Tokenizer::tokenize(&line)?;
+        dbg!(&tokens);
         let raw_command = Parser::parse(&tokens)?;
 
         if should_expand {
@@ -91,9 +92,12 @@ impl Shell {
                 command,
                 args,
                 redirects,
+                env_vars,
             } = raw_command
             {
-                Ok(expander::to_owned(context, command, args, redirects)?)
+                Ok(expander::to_owned(
+                    context, command, args, redirects, env_vars,
+                )?)
             } else {
                 unreachable!("You can only own simple command")
             }

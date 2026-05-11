@@ -3,7 +3,7 @@
 use crate::{
     context::Context,
     error::{ShellError, ShellPhase},
-    parser::{Arg, Command, Redirect, RedirectTarget},
+    parser::{Arg, Command, EnvVariable, Redirect, RedirectTarget},
     shell::Shell,
 };
 use anyhow::{Context as AnyhowContext, Result};
@@ -19,7 +19,8 @@ pub fn expand<'a>(
             command,
             args,
             redirects,
-        } => expand_simple_command(context, command, args, redirects, expanded),
+            env_vars,
+        } => expand_simple_command(context, command, args, redirects, env_vars, expanded),
 
         Command::Pipeline(left, right) => Ok(Command::Pipeline(
             Box::new(expand(context, *left, expanded)?),
@@ -52,6 +53,7 @@ fn expand_simple_command<'a>(
     command: Cow<'a, str>,
     args: Vec<Arg>,
     redirects: Vec<Redirect>,
+    env_vars: Vec<EnvVariable>,
     expanded: &[String],
 ) -> Result<Command<'static>> {
     // This function uses recursiona and might seems a bit complicated, but it's actually quite elegant
@@ -84,6 +86,7 @@ fn expand_simple_command<'a>(
                 command,
                 args: mut aliased_args,
                 redirects: mut aliased_redirects,
+                env_vars,
             } => {
                 // This is the best case scenario, it's just a simple command so imagine like cdh='cd ~'
                 // We can just expand the args, so '~' can become /home/<user>
@@ -98,6 +101,7 @@ fn expand_simple_command<'a>(
                         command,
                         args: aliased_args,
                         redirects: aliased_redirects,
+                        env_vars,
                     },
                     &next_expanded,
                 )
@@ -132,7 +136,7 @@ fn expand_simple_command<'a>(
             }
         }
     } else {
-        Ok(to_owned(context, command, args, redirects)?)
+        Ok(to_owned(context, command, args, redirects, env_vars)?)
     }
 }
 
@@ -288,11 +292,13 @@ pub fn to_owned<'a>(
     command: Cow<'a, str>,
     args: Vec<Arg>,
     redirects: Vec<Redirect>,
+    env_vars: Vec<EnvVariable<'a>>,
 ) -> Result<Command<'static>> {
     Ok(Command::Simple {
         command: command.into_owned().into(),
         args: expand_args(context, args)?,
         redirects: expanded_redirects(context, redirects)?,
+        env_vars: env_vars.into_iter().map(|v| v.into_owned()).collect(),
     })
 }
 
