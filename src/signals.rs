@@ -1,16 +1,20 @@
 //signals.rs
 
+use crate::error::{ShellError, ShellPhase};
+use anyhow::Result;
 use std::{
+    io,
     os::unix::io::RawFd,
     sync::atomic::{AtomicI32, Ordering},
 };
 
 static PIPE_WRITE_END: AtomicI32 = AtomicI32::new(-1);
+static SIGNAL_BYTE: u8 = 1;
 
 extern "C" fn sigchld_handler(_: libc::c_int) {
     let fd = PIPE_WRITE_END.load(Ordering::Relaxed);
     if fd != -1 {
-        let byte = &1u8 as *const u8 as *const libc::c_void;
+        let byte = &SIGNAL_BYTE as *const u8 as *const libc::c_void;
         unsafe {
             libc::write(fd, byte, 1);
         }
@@ -24,30 +28,40 @@ pub struct SignalHandler {
 impl Drop for SignalHandler {
     fn drop(&mut self) {
         unsafe {
-            let write_fd = PIPE_WRITE_END.load(Ordering::Relaxed);
+            // Reset signal handler first to prevent races
+            let mut signal_action: libc::sigaction = std::mem::zeroed();
+            signal_action.sa_sigaction = libc::SIG_DFL;
+            libc::sigaction(libc::SIGCHLD, &signal_action, std::ptr::null_mut());
+
+            // Clear out the atomic so the handler (if running) sees -1
+            let write_fd = PIPE_WRITE_END.swap(-1, Ordering::Relaxed);
+
+            // Now safely close the file descriptors
+            if write_fd != -1 {
+                libc::close(write_fd);
+            }
             libc::close(self.sigchld_fd);
-            libc::close(write_fd);
         }
     }
 }
 
 impl SignalHandler {
-    pub fn new() -> Self {
+    pub fn new() -> Result<Self> {
         Self::ignore();
-        let sigchld_fd = Self::setup_self_pipe_trick();
-        Self { sigchld_fd }
+        let sigchld_fd = Self::setup_self_pipe_trick()?;
+        Ok(Self { sigchld_fd })
     }
 
     pub fn drain_child_pipe(&self) -> bool {
         let mut buffer = [0u8; 64];
-        let childs = unsafe {
+        let bytes_read = unsafe {
             libc::read(
                 self.sigchld_fd,
                 buffer.as_mut_ptr() as *mut libc::c_void,
                 64,
             )
         };
-        childs > 0
+        bytes_read > 0
     }
 
     pub fn ignore() {
@@ -73,16 +87,15 @@ impl SignalHandler {
         }
     }
 
-    fn setup_self_pipe_trick() -> RawFd {
+    fn setup_self_pipe_trick() -> Result<RawFd> {
         unsafe {
-            // Create the pipe
+            // Create the pipe and make it non blocking
             let mut fds = [0i32; 2];
-            libc::pipe(fds.as_mut_ptr());
+            if libc::pipe2(fds.as_mut_ptr(), libc::O_NONBLOCK) == -1 {
+                return Self::os_error();
+            }
 
             let [read_end, write_end] = fds;
-
-            // Set the pipe write end to be non blocking
-            libc::fcntl(read_end, libc::F_SETFL, libc::O_NONBLOCK);
 
             // Store the value in the static variable to be passed down to the
             // signal handler C function callback
@@ -103,7 +116,19 @@ impl SignalHandler {
             // Create the signal handler itself with everything we did before
             libc::sigaction(libc::SIGCHLD, &signal_action, std::ptr::null_mut());
 
-            read_end
+            Ok(read_end)
         }
+    }
+
+    fn os_error<T>() -> Result<T> {
+        Self::error(&io::Error::last_os_error().to_string())
+    }
+
+    fn error<T>(message: &str) -> Result<T> {
+        Err(anyhow::Error::new(ShellError {
+            phase: ShellPhase::SignalHandler,
+            command: None,
+            message: message.into(),
+        }))
     }
 }

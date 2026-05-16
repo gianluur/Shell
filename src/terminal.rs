@@ -69,8 +69,7 @@ impl Terminal {
 
     /// Prints to the screen any output with and goes to a new line
     pub fn println(&mut self, output: &str) -> Result<()> {
-        // In raw mode, \r\n is essential for proper carriage return and newline
-        write!(self.stdout, "{}\r\n", output)
+        write!(self.stdout, "{}\n", output)
             .with_context(|| format!("Failed to write line to terminal: {}", output))?;
         self.stdout
             .flush()

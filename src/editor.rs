@@ -88,7 +88,7 @@ impl Buffer {
         std::mem::take(&mut self.data)
     }
 
-    pub fn content(&mut self) -> String {
+    pub fn content(&self) -> String {
         self.data.clone()
     }
 
@@ -132,7 +132,7 @@ impl Editor {
             }
 
             // Prints the current output of any background process
-            for line in context.jobs.get_bg_job_stdout()? {
+            for line in context.jobs.get_background_stdout()? {
                 terminal.print(&line)?;
             }
 

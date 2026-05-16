@@ -1,5 +1,5 @@
 use crate::terminal::Terminal;
-use anyhow::Result;
+use anyhow::{Ok, Result};
 use std::{collections::HashMap, fmt, os::fd::RawFd};
 
 pub enum JobState {
@@ -143,8 +143,8 @@ impl Jobs {
                         notification = Some(format!("[{}] Continued", id));
                     }
 
-                    if notification.is_some() {
-                        terminal.notifications.push(notification.unwrap());
+                    if let Some(notification) = notification {
+                        terminal.notifications.push(notification);
                     }
                 }
             }
@@ -152,39 +152,46 @@ impl Jobs {
         Ok(())
     }
 
-    pub fn get_bg_job_stdout(&mut self) -> Result<Vec<String>> {
+    pub fn get_background_stdout(&mut self) -> Result<Vec<String>> {
         let mut stdout = Vec::new();
-        let mut buf = [0u8; 4096];
 
         for job in self.table.values() {
             if let Some(fd) = job.stdout_fd {
-                unsafe {
-                    // Set non-blocking
-                    let flags = libc::fcntl(fd, libc::F_GETFL);
-                    libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK);
-
-                    loop {
-                        let n = libc::read(fd, buf.as_mut_ptr() as *mut libc::c_void, buf.len());
-
-                        if n < 0 {
-                            let err = std::io::Error::last_os_error();
-                            // Break only if it's truly non-blocking, otherwise handle error
-                            if err.kind() == std::io::ErrorKind::WouldBlock {
-                                break;
-                            }
-                            return Err(err.into());
-                        } else if n == 0 {
-                            break; // EOF1
-                        }
-
-                        let output = String::from_utf8_lossy(&buf[..n as usize]).into_owned();
-                        stdout.push(output);
-                    }
-                }
+                stdout.push(Self::job_stdout_from_fd(fd)?);
             }
         }
 
         Ok(stdout)
+    }
+
+    pub fn job_stdout_from_fd(fd: RawFd) -> Result<String> {
+        let mut output = String::new();
+        let mut buf = [0u8; 4096];
+
+        unsafe {
+            // Set non-blocking
+            let flags = libc::fcntl(fd, libc::F_GETFL);
+            libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK);
+
+            loop {
+                let n = libc::read(fd, buf.as_mut_ptr() as *mut libc::c_void, buf.len());
+
+                if n < 0 {
+                    let err = std::io::Error::last_os_error();
+                    // Break only if it's truly non-blocking, otherwise handle error
+                    if err.kind() == std::io::ErrorKind::WouldBlock {
+                        break;
+                    }
+                    return Err(err.into());
+                } else if n == 0 {
+                    break; // EOF
+                }
+
+                output.push_str(&String::from_utf8_lossy(&buf[..n as usize]).into_owned());
+            }
+        }
+
+        Ok(output)
     }
 
     pub fn wait_foreground(

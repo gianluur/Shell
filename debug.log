@@ -1,0 +1,37 @@
+   Compiling shell v0.1.0 (/home/shxqow/Documents/Projects/Shell)
+warning: unused import: `std::collections::HashMap`
+ --> src/tokenizer.rs:3:5
+  |
+3 | use std::collections::HashMap;
+  |     ^^^^^^^^^^^^^^^^^^^^^^^^^
+  |
+  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: methods `move_up` and `move_down` are never used
+  --> src/terminal.rs:89:12
+   |
+20 | impl Terminal {
+   | ------------- methods in this implementation
+...
+89 |     pub fn move_up(&mut self) -> Result<()> {
+   |            ^^^^^^^
+...
+95 |     pub fn move_down(&mut self) -> Result<()> {
+   |            ^^^^^^^^^
+   |
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `shell` (bin "shell") generated 2 warnings (run `cargo fix --bin "shell" -p shell` to apply 1 suggestion)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.23s
+     Running `target/debug/shell`
+[src/shell.rs:86:9] &tokens = [
+    Word(
+        "exit",
+    ),
+]
+[src/shell.rs:88:9] &raw_command = Simple {
+    command: "exit",
+    args: [],
+    redirects: [],
+    env_vars: [],
+}

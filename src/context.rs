@@ -30,7 +30,7 @@ impl Context {
             pid: unsafe { libc::getpid() },
             jobs: Jobs::new(),
             builtins: BuiltIns::new(),
-            signals: SignalHandler::new(),
+            signals: SignalHandler::new()?,
             last_exit_code: 0,
             last_job_pid: None,
             history: History::new()?,
@@ -64,7 +64,7 @@ impl Context {
 
             // Give the shell the terminal
             if libc::tcsetpgrp(libc::STDIN_FILENO, gpid) == -1 {
-                return Err(anyhow!("Failed to give the termianl to the shell"));
+                return Err(anyhow!("Failed to give the terminal to the shell"));
             }
 
             Ok(gpid)

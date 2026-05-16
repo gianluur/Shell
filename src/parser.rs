@@ -360,7 +360,7 @@ impl<'a> Parser<'a> {
             }
 
             match token {
-                Token::Word(_) | Token::SingleQuoted(_) | Token::DoubleQuoted(_) => {
+                Word(_) | SingleQuoted(_) | DoubleQuoted(_) => {
                     let arg = self.tokens.next().unwrap().try_into()?;
                     args.push(arg);
                 }

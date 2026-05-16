@@ -3,14 +3,20 @@
 use crate::{
     context::Context,
     error::{ShellError, ShellPhase},
+    executor,
     parser::{Arg, Command, EnvVariable, Redirect, RedirectTarget},
     shell::Shell,
+    terminal::Terminal,
 };
 use anyhow::{Context as AnyhowContext, Result};
-use std::{borrow::Cow, env};
+use std::{
+    borrow::Cow,
+    env::{self},
+};
 
 pub fn expand<'a>(
     context: &mut Context,
+    terminal: &mut Terminal,
     command: Command<'a>,
     expanded: &[String],
 ) -> Result<Command<'static>> {
@@ -20,36 +26,39 @@ pub fn expand<'a>(
             args,
             redirects,
             env_vars,
-        } => expand_simple_command(context, command, args, redirects, env_vars, expanded),
+        } => expand_simple_command(
+            context, terminal, command, args, redirects, env_vars, expanded,
+        ),
 
         Command::Pipeline(left, right) => Ok(Command::Pipeline(
-            Box::new(expand(context, *left, expanded)?),
-            Box::new(expand(context, *right, expanded)?),
+            Box::new(expand(context, terminal, *left, expanded)?),
+            Box::new(expand(context, terminal, *right, expanded)?),
         )),
 
         Command::And(left, right) => Ok(Command::And(
-            Box::new(expand(context, *left, expanded)?),
-            Box::new(expand(context, *right, expanded)?),
+            Box::new(expand(context, terminal, *left, expanded)?),
+            Box::new(expand(context, terminal, *right, expanded)?),
         )),
 
         Command::Or(left, right) => Ok(Command::Or(
-            Box::new(expand(context, *left, expanded)?),
-            Box::new(expand(context, *right, expanded)?),
+            Box::new(expand(context, terminal, *left, expanded)?),
+            Box::new(expand(context, terminal, *right, expanded)?),
         )),
 
         Command::Sequence(left, right) => Ok(Command::Sequence(
-            Box::new(expand(context, *left, expanded)?),
-            Box::new(expand(context, *right, expanded)?),
+            Box::new(expand(context, terminal, *left, expanded)?),
+            Box::new(expand(context, terminal, *right, expanded)?),
         )),
 
         Command::Background(cmd) => Ok(Command::Background(Box::new(expand(
-            context, *cmd, expanded,
+            context, terminal, *cmd, expanded,
         )?))),
     }
 }
 
 fn expand_simple_command<'a>(
     context: &mut Context,
+    terminal: &mut Terminal,
     command: Cow<'a, str>,
     args: Vec<Arg>,
     redirects: Vec<Redirect>,
@@ -66,7 +75,7 @@ fn expand_simple_command<'a>(
     {
         // We need to parse the aliased command, because it was written in just string form
         // So we currently have no way to check where are the arguments, what kind of argument they are etc...
-        let aliased_command = Shell::parse_command(context, &alias, false)
+        let aliased_command = Shell::parse_command(context, terminal, &alias, false)
             .context(format!("Failed to parse alias: {alias}"))?;
 
         // We keep an expanded paramenter to this function that allows us to stop recursion by avoiding infinite loops
@@ -93,10 +102,11 @@ fn expand_simple_command<'a>(
                 // and we call expand, which will come here once again, see that the command isn't alias,
                 // so it will not come at all inside this if statement, and go directly in the else case,
                 // where it will return the command with everything properly expanded
-                aliased_args.extend(expand_args(context, args)?);
-                aliased_redirects.extend(expanded_redirects(context, redirects)?);
+                aliased_args.extend(expand_args(context, terminal, args)?);
+                aliased_redirects.extend(expanded_redirects(context, terminal, redirects)?);
                 expand(
                     context,
+                    terminal,
                     Command::Simple {
                         command,
                         args: aliased_args,
@@ -124,9 +134,10 @@ fn expand_simple_command<'a>(
             // it extends it's arguments with the extra arguments we expanded before.
             // This is also applies to redirects
             composed_command => {
-                let mut expanded_composed = expand(context, composed_command, &next_expanded)?;
-                let extra_args = expand_args(context, args)?;
-                let extra_redirects = expanded_redirects(context, redirects)?;
+                let mut expanded_composed =
+                    expand(context, terminal, composed_command, &next_expanded)?;
+                let extra_args = expand_args(context, terminal, args)?;
+                let extra_redirects = expanded_redirects(context, terminal, redirects)?;
                 append_args_to_composed_command(
                     &mut expanded_composed,
                     extra_args,
@@ -136,7 +147,9 @@ fn expand_simple_command<'a>(
             }
         }
     } else {
-        Ok(to_owned(context, command, args, redirects, env_vars)?)
+        Ok(to_owned(
+            context, terminal, command, args, redirects, env_vars,
+        )?)
     }
 }
 
@@ -171,12 +184,18 @@ fn append_args_to_composed_command(
     }
 }
 
-fn expand_string<'a>(context: &mut Context, to_expand: Cow<'a, str>) -> Result<String> {
+fn expand_string<'a>(
+    context: &mut Context,
+    terminal: &mut Terminal,
+    to_expand: Cow<'a, str>,
+) -> Result<String> {
+    dbg!(&to_expand);
     if !to_expand.contains(['$', '~']) {
         return Ok(to_expand.to_string());
     }
 
     let mut expanded = String::new();
+    dbg!(&expanded);
     let mut chars = to_expand.char_indices().peekable();
 
     while let Some((index, character)) = chars.next() {
@@ -194,52 +213,80 @@ fn expand_string<'a>(context: &mut Context, to_expand: Cow<'a, str>) -> Result<S
 
             '$' => {
                 let mut variable_name = String::new();
-                if chars.peek().is_some() && chars.peek().unwrap().1 == '{' {
-                    chars.next();
 
-                    let mut is_ok = false;
-                    while let Some(next) = chars.next() {
-                        if next.1 == '}' {
-                            is_ok = true;
-                            break;
-                        }
-                        variable_name.push(next.1);
-                    }
+                if let Some((_, paren)) = chars.peek() {
+                    // This expands variables
+                    if *paren != '(' {
+                        if let Some((_, next)) = chars.peek() {
+                            if *next == '{' {
+                                chars.next();
 
-                    if !is_ok {
-                        return error("Found unclosed variable expansion bracket '}'");
-                    }
-                } else {
-                    while let Some(&(_, next)) = chars.peek() {
-                        if next.is_alphanumeric()
-                            || next == '_'
-                            || next == '?'
-                            || next == '$'
-                            || next == '!'
-                        {
-                            chars.next();
-                            variable_name.push(next);
-                        } else {
-                            break;
-                        }
-                    }
-                }
+                                let mut is_ok = false;
+                                while let Some((_, next)) = chars.next() {
+                                    if next == '}' {
+                                        is_ok = true;
+                                        break;
+                                    }
+                                    variable_name.push(next);
+                                }
 
-                if !variable_name.is_empty() {
-                    match variable_name.as_str() {
-                        "$" => expanded.push_str(&context.pid.to_string()),
-                        "0" => expanded.push_str(&context.name.to_string()),
-                        "?" => expanded.push_str(&context.last_exit_code.to_string()),
-                        "!" => {
-                            if let Some(pid) = context.last_job_pid {
-                                expanded.push_str(&pid.to_string());
+                                if !is_ok {
+                                    return error(&format!(
+                                        "Found unclosed variable expansion bracket '}}'"
+                                    ));
+                                }
                             }
                         }
-                        _ => {
-                            let expanded_variable = env::var(variable_name).unwrap_or_default();
-                            expanded.push_str(&expanded_variable);
+
+                        while let Some(&(_, next)) = chars.peek() {
+                            if next.is_alphanumeric() || matches!(next, '_' | '?' | '$' | '!') {
+                                chars.next();
+                                variable_name.push(next);
+                            } else {
+                                break;
+                            }
                         }
-                    };
+
+                        if !variable_name.is_empty() {
+                            match variable_name.as_str() {
+                                "$" => expanded.push_str(&context.pid.to_string()),
+                                "0" => expanded.push_str(&context.name.to_string()),
+                                "?" => expanded.push_str(&context.last_exit_code.to_string()),
+                                "!" => {
+                                    if let Some(pid) = context.last_job_pid {
+                                        expanded.push_str(&pid.to_string());
+                                    }
+                                }
+                                _ => {
+                                    let expanded_variable =
+                                        env::var(variable_name).unwrap_or_default();
+                                    expanded.push_str(&expanded_variable);
+                                }
+                            };
+                        }
+                    }
+                    // This is for parsing subcommands
+                    else {
+                        chars.next();
+                        let mut sub_content = String::new();
+                        let mut depth = 1;
+
+                        while let Some((_, c)) = chars.next() {
+                            match c {
+                                '(' => depth += 1,
+                                ')' => depth -= 1,
+                                _ => {}
+                            }
+                            if depth == 0 {
+                                break;
+                            }
+                            sub_content.push(c);
+                        }
+
+                        let command = Shell::parse_command(context, terminal, &sub_content, true)?;
+                        let output = executor::execute_and_get_stdout(context, terminal, command)?;
+                        expanded.push_str(&output.trim()); // Trim often needed for stdout
+                    }
                 }
             }
 
@@ -247,15 +294,22 @@ fn expand_string<'a>(context: &mut Context, to_expand: Cow<'a, str>) -> Result<S
         }
     }
 
+    dbg!(&expanded);
     Ok(expanded)
 }
 
-fn expand_args(context: &mut Context, args: Vec<Arg>) -> Result<Vec<Arg<'static>>> {
+fn expand_args(
+    context: &mut Context,
+    terminal: &mut Terminal,
+    args: Vec<Arg>,
+) -> Result<Vec<Arg<'static>>> {
     let mut expanded_args = Vec::new();
     for arg in args {
         let expanded_arg = match arg {
-            Arg::Word(s) => Arg::Word(Cow::Owned(expand_string(context, s)?)),
-            Arg::DoubleQuoted(s) => Arg::DoubleQuoted(Cow::Owned(expand_string(context, s)?)),
+            Arg::Word(s) => Arg::Word(Cow::Owned(expand_string(context, terminal, s)?)),
+            Arg::DoubleQuoted(s) => {
+                Arg::DoubleQuoted(Cow::Owned(expand_string(context, terminal, s)?))
+            }
             Arg::SingleQuoted(s) => Arg::SingleQuoted(Cow::Owned(s.into_owned())), // Convert to owned
         };
         expanded_args.push(expanded_arg);
@@ -266,13 +320,14 @@ fn expand_args(context: &mut Context, args: Vec<Arg>) -> Result<Vec<Arg<'static>
 
 fn expanded_redirects(
     context: &mut Context,
+    terminal: &mut Terminal,
     redirects: Vec<Redirect>,
 ) -> Result<Vec<Redirect<'static>>> {
     let mut expanded_redirects = Vec::new();
     for redirect in redirects {
         let target = match redirect.target {
             RedirectTarget::File(cow) => {
-                let expanded_path = expand_string(context, cow)?;
+                let expanded_path = expand_string(context, terminal, cow)?;
                 RedirectTarget::File(Cow::Owned(expanded_path))
             }
             RedirectTarget::FileDescriptor(fd) => RedirectTarget::FileDescriptor(fd),
@@ -289,13 +344,14 @@ fn expanded_redirects(
 
 fn expand_env_vars<'a>(
     context: &mut Context,
+    terminal: &mut Terminal,
     env_vars: Vec<EnvVariable<'a>>,
 ) -> Result<Vec<EnvVariable<'static>>> {
     let mut expanded_env_vars = Vec::new();
     for var in env_vars {
         expanded_env_vars.push(EnvVariable::new(
             Cow::Owned(var.name.into_owned()),
-            Cow::Owned(expand_string(context, var.value)?),
+            Cow::Owned(expand_string(context, terminal, var.value)?),
         ));
     }
 
@@ -304,6 +360,7 @@ fn expand_env_vars<'a>(
 
 pub fn to_owned<'a>(
     context: &mut Context,
+    terminal: &mut Terminal,
     command: Cow<'a, str>,
     args: Vec<Arg>,
     redirects: Vec<Redirect>,
@@ -311,9 +368,9 @@ pub fn to_owned<'a>(
 ) -> Result<Command<'static>> {
     Ok(Command::Simple {
         command: command.into_owned().into(),
-        args: expand_args(context, args)?,
-        redirects: expanded_redirects(context, redirects)?,
-        env_vars: expand_env_vars(context, env_vars)?,
+        args: expand_args(context, terminal, args)?,
+        redirects: expanded_redirects(context, terminal, redirects)?,
+        env_vars: expand_env_vars(context, terminal, env_vars)?,
     })
 }
 

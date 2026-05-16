@@ -8,6 +8,7 @@ pub enum ShellPhase {
     Parser,
     Expander,
     Executor,
+    SignalHandler,
 }
 
 impl fmt::Display for ShellPhase {
@@ -17,6 +18,7 @@ impl fmt::Display for ShellPhase {
             ShellPhase::Parser => "Parser",
             ShellPhase::Expander => "Expander",
             ShellPhase::Executor => "Executor",
+            ShellPhase::SignalHandler => "SignalHandler",
         };
         write!(f, "{}", name)
     }

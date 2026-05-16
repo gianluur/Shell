@@ -3,7 +3,7 @@
 use crate::{
     context::Context,
     error::*,
-    jobs::{Job, JobState},
+    jobs::{Job, JobState, Jobs},
     parser::{Command, EnvVariable, Redirect, RedirectKind},
     terminal::Terminal,
 };
@@ -12,9 +12,10 @@ use std::{collections::HashMap, env, ffi::CString, io, os::fd::RawFd};
 
 pub fn execute(
     context: &mut Context,
-    command: Command<'static>,
     terminal: &mut Terminal,
-) -> Result<i32> {
+    command: Command<'static>,
+    stdout_fd: Option<RawFd>, // if this parameter here is present it means that we're calling this from a subcommand
+) -> Result<(i32, libc::pid_t)> {
     if let Command::Simple {
         command: ref name,
         ref args,
@@ -23,51 +24,61 @@ pub fn execute(
     {
         if let Some(builtin) = context.builtins.get(name) {
             let str_args: Vec<&str> = args.iter().map(|a| a.as_str()).collect();
-            return builtin(&str_args, context, terminal);
+            return Ok((builtin(&str_args, context, terminal)?, 0 as libc::pid_t));
         }
     }
 
+    let stdout = stdout_fd.unwrap_or(libc::STDOUT_FILENO);
     let command_str = command.to_string();
     match command {
         Command::Simple { .. } => {
-            let pgid = spawn_process(
-                context,
-                command,
-                libc::STDIN_FILENO,
-                libc::STDOUT_FILENO,
-                None,
-                true,
-            )?;
+            let pgid = spawn_process(context, command, libc::STDIN_FILENO, stdout, None, true)?;
 
-            context
-                .jobs
-                .wait_foreground(context.pgid, terminal, pgid, command_str, &[pgid], true)
+            if stdout_fd.is_none() {
+                Ok((
+                    context.jobs.wait_foreground(
+                        context.pgid,
+                        terminal,
+                        pgid,
+                        command_str,
+                        &[pgid],
+                        true,
+                    )?,
+                    pgid,
+                ))
+            } else {
+                Ok((0, pgid))
+            }
         }
 
         Command::And(left, right) => {
-            let status = execute(context, *left, terminal)?;
-            if status == 0 {
-                execute(context, *right, terminal)
+            let status = execute(context, terminal, *left, stdout_fd)?;
+            if status.0 == 0 {
+                execute(context, terminal, *right, stdout_fd)
             } else {
                 Ok(status)
             }
         }
 
         Command::Or(left, right) => {
-            let status = execute(context, *left, terminal)?;
-            if status != 0 {
-                execute(context, *right, terminal)
+            let status = execute(context, terminal, *left, stdout_fd)?;
+            if status.0 != 0 {
+                execute(context, terminal, *right, stdout_fd)
             } else {
                 Ok(status)
             }
         }
 
         Command::Sequence(left, right) => {
-            execute(context, *left, terminal)?;
-            execute(context, *right, terminal)
+            execute(context, terminal, *left, stdout_fd)?;
+            execute(context, terminal, *right, stdout_fd)
         }
 
         Command::Background(command) => {
+            if stdout != libc::STDOUT_FILENO {
+                error("You cannot use a background command as a subcommand")?;
+            }
+
             let mut fds = [0; 2];
             unsafe {
                 if libc::pipe2(fds.as_mut_ptr(), libc::O_CLOEXEC) == -1 {
@@ -106,7 +117,7 @@ pub fn execute(
 
                 terminal.println(&format!("[{}] {}", job_id, pid))?;
 
-                Ok(0)
+                Ok((0, pid))
             } else {
                 let (gpid, pids) = spawn_piped(
                     context,
@@ -135,23 +146,29 @@ pub fn execute(
                 }
                 terminal.println("")?;
 
-                Ok(0)
+                Ok((0, gpid))
             }
         }
 
         Command::Pipeline(..) => {
-            let (gpid, pids) = spawn_piped(
-                context,
-                command,
-                libc::STDIN_FILENO,
-                libc::STDOUT_FILENO,
-                None,
-                true,
-            )?;
+            let (gpid, pids) =
+                spawn_piped(context, command, libc::STDIN_FILENO, stdout, None, true)?;
 
-            context
-                .jobs
-                .wait_foreground(context.pgid, terminal, gpid, command_str, &pids, true)
+            if stdout_fd.is_none() {
+                Ok((
+                    context.jobs.wait_foreground(
+                        context.pgid,
+                        terminal,
+                        gpid,
+                        command_str,
+                        &pids,
+                        true,
+                    )?,
+                    gpid,
+                ))
+            } else {
+                Ok((0, gpid))
+            }
         }
     }
 }
@@ -247,7 +264,9 @@ fn spawn_process(
                     // If it's a foreground process and doesn't belong to a pipeline
                     // give him the terminal
                     if pgid.is_none() && is_foreground {
-                        libc::tcsetpgrp(libc::STDIN_FILENO, pid);
+                        if libc::tcsetpgrp(libc::STDIN_FILENO, pid) == -1 {
+                            return os_error();
+                        }
                     }
 
                     // Close the pipe ends we handed to the child — we don't need them
@@ -324,6 +343,63 @@ fn spawn_piped(
 
         _ => unreachable!(),
     }
+}
+
+pub fn execute_and_get_stdout(
+    context: &mut Context,
+    terminal: &mut Terminal,
+    command: Command<'static>,
+) -> Result<String> {
+    let mut pipe_fds = [0; 2];
+    unsafe {
+        if libc::pipe2(pipe_fds.as_mut_ptr(), libc::O_CLOEXEC) == -1 {
+            return os_error();
+        }
+    }
+
+    let (read_end, write_end) = (pipe_fds[0], pipe_fds[1]);
+    let pgid = execute(context, terminal, command, Some(write_end))?.1;
+
+    unsafe {
+        libc::close(write_end);
+    }
+
+    let mut output = String::with_capacity(4096);
+    let mut status = 0;
+    loop {
+        let ret = unsafe { libc::waitpid(-pgid, &mut status, libc::WNOHANG | libc::WUNTRACED) };
+
+        let finished = if ret == -1 {
+            true
+        } else if ret > 0 {
+            libc::WIFEXITED(status) || libc::WIFSIGNALED(status)
+        } else {
+            false
+        };
+        output.push_str(&Jobs::job_stdout_from_fd(read_end)?);
+
+        if finished {
+            break;
+        }
+
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+
+    unsafe {
+        libc::close(read_end);
+        if libc::tcsetpgrp(libc::STDIN_FILENO, context.pgid) == -1 {
+            return os_error();
+        }
+    }
+
+    if output.ends_with('\n') {
+        output.pop();
+        if output.ends_with('\r') {
+            output.pop();
+        }
+    }
+
+    Ok(output)
 }
 
 fn set_stdio(redirects: Vec<Redirect>) -> Result<()> {
@@ -407,4 +483,42 @@ fn error<T>(message: &str) -> Result<T> {
         command: None,
         message: message.into(),
     }))
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::{context::Context, executor::execute_and_get_stdout, shell::Shell};
+
+    // Generates exactly this shell command:
+    // python3 -c "print('x' * 1000, end='')" (repeated enough to exceed 64kb)
+    // We use a simple approach: write a big output via a script passed to sh
+
+    #[test]
+    fn test_large_output_subcommand() {
+        // Just check that we get back the right byte count
+        // seq generates numbers 1 to N, one per line
+        // 10000 lines is well above the 64kb pipe buffer
+        let input = "$(seq 1 10000)";
+
+        let mut shell = Shell::new().unwrap();
+        let command =
+            Shell::parse_command(&mut shell.context, &mut shell.terminal, input, true).unwrap();
+
+        let result =
+            execute_and_get_stdout(&mut shell.context, &mut shell.terminal, command).unwrap();
+
+        // seq 1 10000 produces predictable output, last line is "10000"
+        assert!(
+            result.ends_with("10000"),
+            "Output was truncated, ends with: {:?}",
+            &result[result.len().saturating_sub(20)..]
+        );
+
+        // rough size check — should be around 49kb
+        assert!(
+            result.len() > 40_000,
+            "Expected ~49kb but got {} bytes",
+            result.len()
+        );
+    }
 }

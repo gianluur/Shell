@@ -13,8 +13,8 @@ use crate::{
 use anyhow::Result;
 
 pub struct Shell {
-    terminal: Terminal,
-    context: Context,
+    pub terminal: Terminal,
+    pub context: Context,
 }
 
 impl Shell {
@@ -49,8 +49,8 @@ impl Shell {
                 continue;
             }
 
-            let command = Self::parse_command(&mut self.context, &line, true)?;
-            if !Self::execute_command(&mut self.context, &mut self.terminal, command)? {
+            let command = Self::parse_command(&mut self.context, &mut self.terminal, &line, true)?;
+            if !Self::execute_command(&mut self.context, &mut self.terminal, command)?.0 {
                 break;
             }
         }
@@ -77,14 +77,16 @@ impl Shell {
 
     pub fn parse_command(
         context: &mut Context,
+        terminal: &mut Terminal,
         line: &str,
         should_expand: bool,
     ) -> Result<Command<'static>> {
         let tokens = Tokenizer::tokenize(&line)?;
+
         let raw_command = Parser::parse(&tokens)?;
 
         if should_expand {
-            let command = expander::expand(context, raw_command, &Vec::new())?;
+            let command = expander::expand(context, terminal, raw_command, &Vec::new())?;
             Ok(command)
         } else {
             if let Command::Simple {
@@ -95,7 +97,7 @@ impl Shell {
             } = raw_command
             {
                 Ok(expander::to_owned(
-                    context, command, args, redirects, env_vars,
+                    context, terminal, command, args, redirects, env_vars,
                 )?)
             } else {
                 unreachable!("You can only own simple command")
@@ -103,29 +105,31 @@ impl Shell {
         }
     }
 
-    fn execute_command(
+    pub fn execute_command(
         context: &mut Context,
         terminal: &mut Terminal,
         command: Command<'static>,
-    ) -> Result<bool> {
+    ) -> Result<(bool, libc::pid_t)> {
         terminal.exit_raw_mode()?;
 
-        let result = executor::execute(context, command, terminal);
+        let result = executor::execute(context, terminal, command, None);
 
         terminal.enter_raw_mode()?;
 
         match result {
-            Ok(exit_code) => context.last_exit_code = exit_code,
+            Ok((exit_code, pgid)) => {
+                context.last_exit_code = exit_code;
+                Ok((true, pgid))
+            }
             Err(error) => {
                 if let Some(shell_err) = error.downcast_ref::<ShellError>() {
                     if shell_err.is_exit() {
-                        return Ok(false);
+                        return Ok((false, 0));
                     }
                 }
                 terminal.println(&format!("{:?}", error))?;
+                Ok((true, 0))
             }
-        };
-
-        Ok(true)
+        }
     }
 }

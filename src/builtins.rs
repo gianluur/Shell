@@ -180,7 +180,7 @@ impl BuiltIns {
     pub fn alias(args: &[&str], context: &mut Context, terminal: &mut Terminal) -> Result<i32> {
         let (name, mut value) = Self::check_env_var_args("alias", args)?;
 
-        if args.len() == 0 {
+        if args.is_empty() {
             for (name, value) in context.aliases.get_map() {
                 terminal.println(&format!("{name}={value}"))?;
             }
@@ -220,7 +220,7 @@ impl BuiltIns {
     }
 
     pub fn unset(args: &[&str], _: &mut Context, _: &mut Terminal) -> Result<i32> {
-        if args.len() > 1 {
+        if args.len() != 1 {
             return Self::error("unset", "Only either none or 1 parameter");
         }
 
@@ -244,11 +244,11 @@ impl BuiltIns {
         let name = parts[0].trim();
         let value = parts[1].trim();
 
-        if name.len() == 0 {
+        if name.is_empty() {
             return Self::error(function_name, "Name can't be empty");
         }
 
-        if value.len() == 0 {
+        if value.is_empty() {
             return Self::error(function_name, "Value can't be empty");
         }
 
