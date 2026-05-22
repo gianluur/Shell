@@ -125,8 +125,6 @@ All dependencies are listed in `Cargo.toml`.
 
 ## Limitations & Future Work
 
-- No support for `$(command)` substitution or arithmetic expansion.
-- No alias or completion system.
 - The expander does not handle escaping of `$` or `\` inside double quotes fully.
 - History does not support reverse search (`Ctrl+R`).
 

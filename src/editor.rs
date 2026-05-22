@@ -1,7 +1,7 @@
 //editor.rs
 
 use crate::{context::Context, prompt::Prompt, terminal::Terminal};
-use anyhow::{Context as AnyhowContext, Result};
+use anyhow::{Context as AnyhowContext, Ok, Result};
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyModifiers};
 
 struct Buffer {
@@ -155,6 +155,9 @@ impl Editor {
                             match code {
                                 KeyCode::Left => self.alt_left(context, terminal, prompt)?,
                                 KeyCode::Right => self.alt_right(context, terminal, prompt)?,
+                                KeyCode::Backspace => {
+                                    self.alt_backspace(context, terminal, prompt)?
+                                }
                                 _ => {}
                             }
                         } else {
@@ -221,6 +224,20 @@ impl Editor {
         prompt: &Prompt,
     ) -> Result<()> {
         self.buffer.index = self.buffer.next_word();
+        self.redraw(context, terminal, prompt, false)
+    }
+
+    fn alt_backspace(
+        &mut self,
+        context: &mut Context,
+        terminal: &mut Terminal,
+        prompt: &Prompt,
+    ) -> Result<()> {
+        let start = self.buffer.prev_word();
+        if start < self.buffer.index {
+            self.buffer.data.drain(start..self.buffer.index);
+            self.buffer.index = start;
+        }
         self.redraw(context, terminal, prompt, false)
     }
 

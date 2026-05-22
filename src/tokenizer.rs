@@ -162,14 +162,17 @@ impl<'a> Tokenizer<'a> {
                     inside_single_quote = !inside_single_quote;
                     self.next();
                 }
+
                 '"' if !inside_single_quote => {
                     inside_double_quote = !inside_double_quote;
                     self.next();
                 }
+
                 '(' if !inside_single_quote && !inside_double_quote => {
                     paren_depth += 1;
                     self.next();
                 }
+
                 ')' if !inside_single_quote && !inside_double_quote => {
                     paren_depth -= 1;
                     self.next();
@@ -179,6 +182,7 @@ impl<'a> Tokenizer<'a> {
                         return Ok(Token::Word(content));
                     }
                 }
+
                 _ => {
                     self.next();
 
