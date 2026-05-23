@@ -157,7 +157,9 @@ impl BuiltIns {
                 return Self::error(command_name, "Invalid job ID: must be a number after %");
             }
 
-            job_id = job_id_str.parse::<usize>().unwrap();
+            job_id = job_id_str
+                .parse::<usize>()
+                .context("Failed to parse the job id to integer")?;
         } else {
             let possible_job_id = context.jobs.get_last_job_id();
 

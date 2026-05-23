@@ -253,6 +253,12 @@ fn spawn_process(
 
                     libc::execvpe(command.as_ptr(), argv.as_ptr(), envp.as_ptr());
 
+                    // message to the parent the command was not found
+                    let _ = libc::write(
+                        libc::STDERR_FILENO,
+                        b"Command not found\n".as_ptr() as *const _,
+                        19,
+                    );
                     // execvp only returns on failure
                     libc::_exit(1);
                 } else {

@@ -12,6 +12,7 @@ use anyhow::{Context as AnyhowContext, Result};
 use std::{
     borrow::Cow,
     env::{self},
+    ffi::{CStr, CString},
 };
 
 pub fn expand<'a>(
@@ -189,13 +190,11 @@ fn expand_string<'a>(
     terminal: &mut Terminal,
     to_expand: Cow<'a, str>,
 ) -> Result<String> {
-    dbg!(&to_expand);
     if !to_expand.contains(['$', '~']) {
         return Ok(to_expand.to_string());
     }
 
     let mut expanded = String::new();
-    dbg!(&expanded);
     let mut chars = to_expand.char_indices().peekable();
 
     while let Some((index, character)) = chars.next() {
@@ -294,7 +293,6 @@ fn expand_string<'a>(
         }
     }
 
-    dbg!(&expanded);
     Ok(expanded)
 }
 
@@ -305,16 +303,30 @@ fn expand_args(
 ) -> Result<Vec<Arg<'static>>> {
     let mut expanded_args = Vec::new();
     for arg in args {
-        let expanded_arg = match arg {
-            Arg::Word(s) => Arg::Word(Cow::Owned(expand_string(context, terminal, s)?)),
-            Arg::DoubleQuoted(s) => {
-                Arg::DoubleQuoted(Cow::Owned(expand_string(context, terminal, s)?))
+        match arg {
+            Arg::Word(s) => {
+                // We first expand the variables and then we do globbing
+                let expanded_string = expand_string(context, terminal, s)?;
+                let matches = glob_word(&expanded_string)?;
+                if matches.is_empty() {
+                    expanded_args.push(Arg::Word(Cow::Owned(expanded_string)));
+                } else {
+                    for m in matches {
+                        expanded_args.push(Arg::Word(Cow::Owned(m)));
+                    }
+                }
             }
-            Arg::SingleQuoted(s) => Arg::SingleQuoted(Cow::Owned(s.into_owned())), // Convert to owned
-        };
-        expanded_args.push(expanded_arg);
+            Arg::DoubleQuoted(s) => {
+                // We expand variable but not do globbing
+                let expanded_str = expand_string(context, terminal, s)?;
+                expanded_args.push(Arg::DoubleQuoted(Cow::Owned(expanded_str)));
+            }
+            Arg::SingleQuoted(s) => {
+                // Remains as it is
+                expanded_args.push(Arg::SingleQuoted(Cow::Owned(s.into_owned())));
+            }
+        }
     }
-
     Ok(expanded_args)
 }
 
@@ -356,6 +368,40 @@ fn expand_env_vars<'a>(
     }
 
     Ok(expanded_env_vars)
+}
+
+fn glob_word(pattern: &str) -> Result<Vec<String>> {
+    if !pattern.contains(['*', '?', '[']) {
+        return Ok(Vec::new());
+    }
+
+    let pattern_c = CString::new(pattern)?;
+    let mut glob_result: libc::glob_t = unsafe { std::mem::zeroed() };
+    let result = unsafe {
+        libc::glob(
+            pattern_c.as_ptr(),
+            0,    // default behavior
+            None, // no custom error function
+            &mut glob_result,
+        )
+    };
+
+    if result == 0 {
+        // Success – one or more matches
+        let mut matches = Vec::new();
+        for i in 0..glob_result.gl_pathc {
+            let path_cstr = unsafe { CStr::from_ptr(*glob_result.gl_pathv.offset(i as isize)) };
+            matches.push(path_cstr.to_string_lossy().into_owned());
+        }
+        unsafe { libc::globfree(&mut glob_result) };
+        Ok(matches)
+    } else if result == libc::GLOB_NOMATCH {
+        // No matches – caller will keep the original word
+        Ok(Vec::new())
+    } else {
+        // Other error (e.g., GLOB_NOSPACE, GLOB_ABORTED)
+        error(&format!("glob failed for pattern '{}'", pattern))
+    }
 }
 
 pub fn to_owned<'a>(
