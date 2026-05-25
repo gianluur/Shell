@@ -29,6 +29,7 @@ impl BuiltIns {
         programs.insert("unalias".to_string(), Self::unalias);
         programs.insert("export".to_string(), Self::export);
         programs.insert("unset".to_string(), Self::unset);
+        programs.insert("pwd".to_string(), Self::pwd);
 
         Self { programs }
     }
@@ -180,8 +181,6 @@ impl BuiltIns {
     }
 
     pub fn alias(args: &[&str], context: &mut Context, terminal: &mut Terminal) -> Result<i32> {
-        let (name, mut value) = Self::check_env_var_args("alias", args)?;
-
         if args.is_empty() {
             for (name, value) in context.aliases.get_map() {
                 terminal.println(&format!("{name}={value}"))?;
@@ -189,8 +188,9 @@ impl BuiltIns {
             return Ok(0);
         }
 
-        value = EnvVariable::strip_quotes_from_value(value);
+        let (name, mut value) = Self::check_env_var_args("alias", args)?;
 
+        value = EnvVariable::strip_quotes_from_value(value);
         context.aliases.add(name.to_string(), value.to_string());
 
         Ok(0)
@@ -233,7 +233,16 @@ impl BuiltIns {
         Ok(0)
     }
 
+    pub fn pwd(_: &[&str], context: &mut Context, terminal: &mut Terminal) -> Result<i32> {
+        terminal.println(&context.directory.to_string_lossy())?;
+        Ok(0)
+    }
+
     fn check_env_var_args<'a>(function_name: &str, args: &'a [&str]) -> Result<(&'a str, &'a str)> {
+        if function_name == "export" && args.is_empty() {
+            return Self::error(function_name, "Needs at least one parameter");
+        }
+
         if args.len() > 1 {
             return Self::error(function_name, "Only either none or 1 parameter");
         }

@@ -1,22 +1,6 @@
 //main.rs
 
-mod aliases;
-mod builtins;
-mod context;
-mod editor;
-mod error;
-mod executor;
-mod expander;
-mod history;
-mod jobs;
-mod parser;
-mod prompt;
-mod shell;
-mod signals;
-mod terminal;
-mod tokenizer;
-
-use shell::Shell;
+use rshell::shell::Shell;
 
 fn main() {
     let mut shell = match Shell::new() {

@@ -1,8 +1,8 @@
 use anyhow::{Context, Result};
 use std::{
     env,
-    fs::{self, File, OpenOptions},
-    io::Write,
+    fs::{File, OpenOptions},
+    io::{Read, Write},
     path::PathBuf,
 };
 pub struct History {
@@ -16,14 +16,18 @@ impl History {
         let home_dir = env::var("HOME").unwrap_or_else(|_| ".".to_string());
         let path = PathBuf::from(home_dir).join(".rshell_history");
 
-        let file = OpenOptions::new()
+        let mut file = OpenOptions::new()
             .read(true)
             .append(true)
             .create(true)
-            .open(&path)?;
+            .open(&path)
+            .context("Failed to read history file")?;
 
         let mut current = Vec::new();
-        let content = fs::read_to_string(&path).context("Failed to open history file")?;
+        let mut content = String::new();
+        file.read_to_string(&mut content)
+            .context("Failed to read history file")?;
+
         content.lines().for_each(|l| current.push(l.to_string()));
 
         Ok(Self {

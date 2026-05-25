@@ -1,14 +1,15 @@
 //context.rs
 
 use crate::{
-    aliases::Aliases, builtins::BuiltIns, history::History, jobs::Jobs, signals::SignalHandler,
+    aliases::Aliases, builtins::BuiltIns, history::History, jobs::Jobs, shell::Shell,
+    signals::SignalHandler, terminal::Terminal,
 };
-use anyhow::{Result, anyhow};
+use anyhow::{Context as AnyhowContext, Result, anyhow};
 use libc::{self};
-use std::{env, path::PathBuf};
+use std::{env, fs::OpenOptions, io::Read, path::PathBuf};
 
 pub struct Context {
-    directory: PathBuf,
+    pub directory: PathBuf,
     pub name: String,
     pub pid: libc::pid_t,
     pub pgid: libc::pid_t,
@@ -36,10 +37,9 @@ impl Context {
             history: History::new()?,
             aliases: Aliases::new(),
         };
-        let home_directory = context.update_cwd();
-        unsafe {
-            env::set_var("OLDPWD", home_directory);
-        }
+
+        Self::setup_home_directory(&mut context);
+        Self::exec_config_file(&mut context)?;
 
         Ok(context)
     }
@@ -69,5 +69,42 @@ impl Context {
 
             Ok(gpid)
         }
+    }
+
+    pub fn setup_home_directory(context: &mut Context) {
+        let home_directory = context.update_cwd();
+        unsafe {
+            env::set_var("OLDPWD", home_directory);
+        }
+    }
+
+    pub fn exec_config_file(context: &mut Context) -> Result<()> {
+        let home_dir = env::var("HOME").unwrap_or_else(|_| ".".to_string());
+        let path = PathBuf::from(home_dir).join(".rshellrc");
+
+        let mut file = OpenOptions::new()
+            .read(true)
+            .append(true)
+            .create(true)
+            .open(&path)
+            .context("Failed to read config file")?;
+
+        let mut content = String::new();
+        file.read_to_string(&mut content)
+            .context("Failed to read config file")?;
+
+        let mut terminal = Terminal::new();
+        for line in content.lines() {
+            let command = Shell::parse_command(context, &mut terminal, &line, true)?;
+            if !Shell::execute_command(context, &mut terminal, command)?.0 {
+                println!(
+                    "Exit command was found in rshellrc, it's suggested not to do that,
+                    the shell will not shutdown because otherewise you wouldn't be able to open it again"
+                );
+                break;
+            }
+        }
+
+        Ok(())
     }
 }

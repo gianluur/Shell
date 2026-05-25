@@ -4,9 +4,9 @@ use crate::{context::Context, prompt::Prompt, terminal::Terminal};
 use anyhow::{Context as AnyhowContext, Ok, Result};
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyModifiers};
 
-struct Buffer {
-    data: String,
-    index: usize,
+pub struct Buffer {
+    pub data: String,
+    pub index: usize,
 }
 
 impl Buffer {
