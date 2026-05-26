@@ -21,6 +21,7 @@ extern "C" fn sigchld_handler(_: libc::c_int) {
     }
 }
 
+#[derive(Clone)]
 pub struct SignalHandler {
     pub sigchld_fd: RawFd,
 }
@@ -50,6 +51,10 @@ impl SignalHandler {
         Self::ignore();
         let sigchld_fd = Self::setup_self_pipe_trick()?;
         Ok(Self { sigchld_fd })
+    }
+
+    pub fn dummy() -> Self {
+        Self { sigchld_fd: -1 }
     }
 
     pub fn drain_child_pipe(&self) -> bool {

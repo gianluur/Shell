@@ -12,6 +12,7 @@ use std::{collections::HashMap, env, path::PathBuf};
 
 pub type Builtin = fn(&[&str], &mut Context, &mut Terminal) -> Result<i32>;
 
+#[derive(Clone)]
 pub struct BuiltIns {
     programs: HashMap<String, Builtin>,
 }
@@ -110,6 +111,7 @@ impl BuiltIns {
                 pgid,
                 command,
                 &pids,
+                false,
                 false,
             )?;
         }

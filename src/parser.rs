@@ -176,6 +176,7 @@ pub enum Command<'a> {
     Or(Box<Command<'a>>, Box<Command<'a>>),
     Sequence(Box<Command<'a>>, Box<Command<'a>>),
     Background(Box<Command<'a>>),
+    Subshell(Box<Command<'a>>),
 }
 
 impl<'a> Command<'a> {
@@ -211,8 +212,11 @@ impl<'a> Command<'a> {
             Command::Sequence(left, right) => {
                 format!("{}; {}", left.to_string(), right.to_string())
             }
-            Command::Background(cmd) => {
-                format!("{} &", cmd.to_string())
+            Command::Background(command) => {
+                format!("{} &", command.to_string())
+            }
+            Command::Subshell(command) => {
+                format!("({})", command.to_string())
             }
         }
     }
@@ -302,43 +306,10 @@ impl<'a> Parser<'a> {
     fn parse_command(&mut self) -> Result<Command<'a>> {
         use Token::*;
 
-        let mut env_vars: Vec<EnvVariable<'a>> = Vec::new();
-        while let Some(token) = self.tokens.peek() {
-            if let Token::Word(content) = token
-                && content.contains('=')
-            {
-                self.tokens.next();
+        let env_vars = self.parse_env_vars()?;
 
-                let mut parts = content.splitn(2, '=');
-                let name = parts.next();
-                let value = parts.next();
-                match (name, value) {
-                    (Some(name), Some(mut value)) => {
-                        if name.trim().len() == 0 {
-                            return Parser::error(
-                                "Syntax error: the name of a env variable can't be empty",
-                            );
-                        }
-
-                        if value.trim().len() == 0 {
-                            return Parser::error(
-                                "Syntax error: the value of a env variable can't be empty",
-                            );
-                        }
-
-                        value = EnvVariable::strip_quotes_from_value(value);
-
-                        env_vars.push(EnvVariable::new(Cow::Borrowed(name), Cow::Borrowed(value)));
-                    }
-                    _ => {
-                        return Parser::error(
-                            "Syntax error: an envirorment variable, must be formatted using name=value syntax",
-                        );
-                    }
-                }
-            } else {
-                break;
-            }
+        if matches!(self.tokens.peek(), Some(LeftParen)) {
+            return self.parse_subshell();
         }
 
         let command = match self.tokens.next() {
@@ -400,6 +371,59 @@ impl<'a> Parser<'a> {
             None => Parser::error(
                 "Redirection error: expected a file path after the redirect operator, but reached end of input",
             ),
+        }
+    }
+
+    fn parse_env_vars(&mut self) -> Result<Vec<EnvVariable<'a>>> {
+        let mut env_vars: Vec<EnvVariable<'a>> = Vec::new();
+        while let Some(token) = self.tokens.peek() {
+            if let Token::Word(content) = token
+                && content.contains('=')
+            {
+                self.tokens.next();
+
+                let mut parts = content.splitn(2, '=');
+                let name = parts.next();
+                let value = parts.next();
+                match (name, value) {
+                    (Some(name), Some(mut value)) => {
+                        if name.trim().is_empty() {
+                            return Parser::error(
+                                "Syntax error: the name of a env variable can't be empty",
+                            );
+                        }
+
+                        value = EnvVariable::strip_quotes_from_value(value);
+
+                        env_vars.push(EnvVariable::new(Cow::Borrowed(name), Cow::Borrowed(value)));
+                    }
+                    _ => {
+                        return Parser::error(
+                            "Syntax error: an envirorment variable, must be formatted using name=value syntax",
+                        );
+                    }
+                }
+            } else {
+                break;
+            }
+        }
+
+        Ok(env_vars)
+    }
+
+    fn parse_subshell(&mut self) -> Result<Command<'a>> {
+        use Token::*;
+
+        self.tokens.next();
+
+        let inner_command = self.parse_sequence()?;
+
+        if let Some(rparen) = self.tokens.next()
+            && matches!(rparen, RightParen)
+        {
+            return Ok(Command::Subshell(Box::new(inner_command)));
+        } else {
+            return Parser::error("Expected closing right parenthesis for subshell command");
         }
     }
 

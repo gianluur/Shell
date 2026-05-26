@@ -2,6 +2,7 @@ use crate::terminal::Terminal;
 use anyhow::{Ok, Result};
 use std::{collections::HashMap, fmt, os::fd::RawFd};
 
+#[derive(Clone)]
 pub enum JobState {
     Running,
     Stopped,
@@ -17,6 +18,7 @@ impl fmt::Display for JobState {
     }
 }
 
+#[derive(Clone)]
 pub struct Job {
     pub pgid: libc::pid_t,
     pub remaining: usize,
@@ -37,7 +39,7 @@ impl Job {
         Job {
             pgid,
             remaining: pids.len(),
-            pids: pids,
+            pids,
             command,
             state,
             stdout_fd,
@@ -52,6 +54,7 @@ impl Job {
     }
 }
 
+#[derive(Clone)]
 pub struct Jobs {
     pub table: HashMap<usize, Job>,
     pub pgid_to_id: HashMap<libc::pid_t, usize>,
@@ -202,6 +205,7 @@ impl Jobs {
         command: String,
         pids: &[libc::pid_t],
         is_new_job: bool,
+        is_subshell: bool,
     ) -> Result<i32> {
         let mut exit_code = 0;
         let mut stopped = false;
@@ -251,7 +255,14 @@ impl Jobs {
             }
         }
 
-        unsafe { libc::tcsetpgrp(libc::STDIN_FILENO, shell_gpid) };
+        // Without this subshells command wouldn't work because, this would get called
+        // before that the parent shell has waited for the forked shell to return,
+        // and it woulnd't allow the shell to return, i discovered this by pure trial and error
+        // so i don't understand the real why behind but it seemed the most logical thing to do
+        // and in fact, it worked
+        if !is_subshell {
+            unsafe { libc::tcsetpgrp(libc::STDIN_FILENO, shell_gpid) };
+        }
 
         Ok(exit_code)
     }

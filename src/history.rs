@@ -1,3 +1,5 @@
+// history.rs
+
 use anyhow::{Context, Result};
 use std::{
     env,
@@ -5,10 +7,21 @@ use std::{
     io::{Read, Write},
     path::PathBuf,
 };
+
 pub struct History {
-    file: File,
+    file: Option<File>,
     pub row: usize,
     pub current: Vec<String>,
+}
+
+impl Clone for History {
+    fn clone(&self) -> Self {
+        Self {
+            file: None,
+            row: self.row,
+            current: self.current.clone(),
+        }
+    }
 }
 
 impl History {
@@ -31,15 +44,25 @@ impl History {
         content.lines().for_each(|l| current.push(l.to_string()));
 
         Ok(Self {
-            file,
+            file: Some(file),
             row: current.len(),
             current,
         })
     }
 
+    pub fn dummy() -> Self {
+        Self {
+            file: None,
+            current: Vec::new(),
+            row: 0,
+        }
+    }
+
     pub fn push(&mut self, command: String) -> Result<()> {
-        writeln!(self.file, "{}", command)?;
-        self.file.flush()?;
+        if let Some(ref mut file) = self.file {
+            writeln!(file, "{}", command)?;
+            file.flush()?;
+        }
 
         self.current.push(command);
 

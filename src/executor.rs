@@ -43,6 +43,7 @@ pub fn execute(
                         command_str,
                         &[pgid],
                         true,
+                        false,
                     )?,
                     pgid,
                 ))
@@ -163,12 +164,57 @@ pub fn execute(
                         command_str,
                         &pids,
                         true,
+                        false,
                     )?,
                     gpid,
                 ))
             } else {
                 Ok((0, gpid))
             }
+        }
+
+        Command::Subshell(command) => {
+            let pid = unsafe { libc::fork() };
+            if pid == -1 {
+                return os_error();
+            }
+
+            if pid == 0 {
+                // ── CHILD ────────────────────────────────────────────────
+
+                unsafe { libc::setpgid(0, 0) };
+
+                let child_pid = unsafe { libc::getpid() };
+                let mut child_context = context.clone().duplicate(child_pid)?;
+                context.signals.reset();
+
+                execute(&mut child_context, terminal, *command, None)?;
+
+                unsafe { libc::_exit(0) };
+            }
+
+            // ── PARENT ────────────────────────────────────────────────────
+            unsafe {
+                libc::setpgid(pid, 0);
+
+                if libc::tcsetpgrp(libc::STDIN_FILENO, pid) == -1 {
+                    return os_error();
+                }
+            }
+
+            let mut status = 0;
+            unsafe {
+                libc::waitpid(pid, &mut status, libc::WNOHANG);
+                libc::tcsetpgrp(libc::STDIN_FILENO, context.pgid);
+            }
+
+            let exit_code = if libc::WIFEXITED(status) {
+                libc::WEXITSTATUS(status)
+            } else {
+                1
+            };
+
+            Ok((exit_code, pid))
         }
     }
 }

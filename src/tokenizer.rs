@@ -24,6 +24,10 @@ pub enum Token<'a> {
     RedirectIn,        // <
     RedirectErr,       // 2>
     RedirectErrAndOut, // 2>&1
+
+    // Parenthesis
+    LeftParen,
+    RightParen,
 }
 
 impl<'a> Token<'a> {
@@ -146,6 +150,8 @@ impl<'a> Tokenizer<'a> {
             ';' => Ok(Token::Semicolon),
             '\n' => Ok(Token::Newline),
             '<' => Ok(Token::RedirectIn),
+            '(' => Ok(Token::LeftParen),
+            ')' => Ok(Token::RightParen),
             _ => self.error("Unexpected operator"),
         }
     }
@@ -178,7 +184,7 @@ impl<'a> Tokenizer<'a> {
                     self.next();
                     if paren_depth == 0 {
                         let end = self.cursor - character.len_utf8(); // exclude the final ')'
-                        let content = &self.line[start + 2..end]; // skip "$("
+                        let content = &self.line[start + 2..end]; // the +2 is for the '$' and '(' character
                         return Ok(Token::Word(content));
                     }
                 }
@@ -201,7 +207,7 @@ impl<'a> Tokenizer<'a> {
     }
 
     fn is_operator(character: char) -> bool {
-        matches!(character, '|' | ';' | '&' | '>' | '<' | '\n')
+        matches!(character, '|' | ';' | '&' | '>' | '<' | '\n' | '(' | ')')
     }
 
     fn starts_operator(&self, ch: char) -> bool {

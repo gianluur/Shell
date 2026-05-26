@@ -54,6 +54,10 @@ pub fn expand<'a>(
         Command::Background(cmd) => Ok(Command::Background(Box::new(expand(
             context, terminal, *cmd, expanded,
         )?))),
+
+        Command::Subshell(cmd) => Ok(Command::Subshell(Box::new(expand(
+            context, terminal, *cmd, expanded,
+        )?))),
     }
 }
 
@@ -180,6 +184,9 @@ fn append_args_to_composed_command(
             append_args_to_composed_command(right, extra_args, extra_redirects)
         }
         Command::Background(inner) => {
+            append_args_to_composed_command(inner, extra_args, extra_redirects)
+        }
+        Command::Subshell(inner) => {
             append_args_to_composed_command(inner, extra_args, extra_redirects)
         }
     }

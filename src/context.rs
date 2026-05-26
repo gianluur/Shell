@@ -8,6 +8,7 @@ use anyhow::{Context as AnyhowContext, Result, anyhow};
 use libc::{self};
 use std::{env, fs::OpenOptions, io::Read, path::PathBuf};
 
+#[derive(Clone)]
 pub struct Context {
     pub directory: PathBuf,
     pub name: String,
@@ -42,6 +43,22 @@ impl Context {
         Self::exec_config_file(&mut context)?;
 
         Ok(context)
+    }
+
+    pub fn duplicate(self, pid: libc::pid_t) -> Result<Context> {
+        Ok(Context {
+            directory: self.directory,
+            name: self.name,
+            pid,
+            pgid: pid,
+            builtins: BuiltIns::new(),
+            jobs: Jobs::new(),
+            signals: SignalHandler::dummy(),
+            last_exit_code: 0,
+            last_job_pid: None,
+            history: History::dummy(),
+            aliases: self.aliases.clone(),
+        })
     }
 
     pub fn update_cwd(&mut self) -> &PathBuf {
